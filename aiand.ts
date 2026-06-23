@@ -27,13 +27,17 @@ type CatalogProvider = { npm?: string; models?: Record<string, unknown> }
 // what we want.
 async function fetchCatalogModels(): Promise<Record<string, unknown>> {
   try {
-    const res = await fetch(`${baseURL}/api.json`)
+    // Bound the request so a hung gateway can't stall OpenCode startup.
+    const res = await fetch(`${baseURL}/api.json`, { signal: AbortSignal.timeout(5000) })
     if (!res.ok) {
       console.error(`[aiand] model catalog fetch failed: ${res.status} ${res.statusText}`)
       return {}
     }
     const catalog = (await res.json()) as Record<string, CatalogProvider>
-    return Object.values(catalog)[0]?.models ?? {}
+    // The catalog keys its single entry under "opencode"; fall back to the
+    // first entry if that ever changes.
+    const entry = catalog["opencode"] ?? Object.values(catalog)[0]
+    return entry?.models ?? {}
   } catch (err) {
     console.error("[aiand] failed to load model catalog", err)
     return {}
