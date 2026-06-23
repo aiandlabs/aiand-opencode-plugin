@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["./aiand.ts"],
+  "model": "aiand/zai-org/glm-5.2"
+}
