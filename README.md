@@ -100,9 +100,10 @@ npm run check:dist   # asserts the compiled entry satisfies OpenCode's plugin lo
 
 ### Releasing
 
-Bump `version` in `package.json`, then publish a GitHub Release tagged `v<version>` — the
-`Publish` workflow builds, smoke-tests, verifies the tag matches `package.json`, and runs
-`npm publish` with provenance.
+Releases are automatic: bump `version` in `package.json` and merge to `main`. The `Publish`
+workflow runs on every push to `main`; when it sees a version that isn't on npm yet, it
+builds, checks the artifact, runs `npm publish` with provenance, and creates the matching
+`v<version>` GitHub Release. Pushes without a version bump publish nothing.
 
 ## Next steps
 
