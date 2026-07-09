@@ -13,53 +13,30 @@ An **ai&** provider in OpenCode that:
 
 Requires [OpenCode](https://opencode.ai) (`curl -fsSL https://opencode.ai/install | bash`).
 
-## Install — internal testing (current)
+## Install
 
-The plugin isn't published yet, so you reference the local `aiand.ts` file.
+Reference the npm package in your `opencode.json` (per-project) or
+`~/.config/opencode/opencode.jsonc` (global) — OpenCode installs it automatically on first run:
 
-The quickest way is to clone the repo and run OpenCode from inside it — the included
-`opencode.json` already wires up the plugin:
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@aiand/opencode-plugin"],
+  "model": "aiand/zai-org/glm-5.2"
+}
+```
+
+Then:
 
 ```bash
-git clone git@github.com:aiandlabs/aiand-opencode-plugin.git
-cd aiand-opencode-plugin
 export AIAND_API_KEY=sk-...        # or use `opencode auth login`
 opencode                            # TUI
 opencode run "say hi in one word"   # one-shot
 ```
 
-`opencode.json` (already in the repo):
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./aiand.ts"],
-  "model": "aiand/zai-org/glm-5.2"
-}
-```
-
-To use it from your **own** projects, point at the cloned file by absolute path in your global
-config (`~/.config/opencode/opencode.jsonc`) so it's available everywhere:
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["/absolute/path/to/aiand-opencode-plugin/aiand.ts"]
-}
-```
-
-## Install — after publishing (future)
-
-Once published to npm as `aiand-opencode-plugin`, there's no clone or local path — just reference
-it by name in any `opencode.json` and OpenCode installs it automatically:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["aiand-opencode-plugin"],
-  "model": "aiand/zai-org/glm-5.2"
-}
-```
-
-> Not available yet — see [Status](#status).
+> **Version pinning:** a bare `"@aiand/opencode-plugin"` installs the latest version on first
+> run and keeps using that cached copy afterwards. To pin (or force an upgrade), use an explicit
+> version — `"@aiand/opencode-plugin@0.1.0"` — which OpenCode caches separately per version.
 
 ## Auth
 
@@ -71,7 +48,7 @@ only needed to actually send a message. Get one at [aiand.com](https://aiand.com
 
 ## How it works
 
-`aiand.ts` uses two OpenCode hooks:
+The plugin uses two OpenCode hooks:
 
 | Hook | What it does |
 |---|---|
@@ -90,14 +67,40 @@ only needed to actually send a message. Get one at [aiand.com](https://aiand.com
 | `AIAND_API_KEY` | — | Your ai& API key (alternative to `opencode auth login`). |
 | `AIAND_BASE_URL` | `https://api.aiand.com/v1` | Override the gateway base URL. |
 
-## Status
+## Contributing / local development
 
-Verified end-to-end against **OpenCode v1.17.9**: the plugin loads, the `aiand` provider appears
-with ai&'s live catalog, `opencode run -m aiand/<model> "..."` returns a completion through the
-gateway, and `opencode auth login` surfaces the "ai& API Key" method. This is a working plugin
-loaded from a local file; it is **not yet published to npm**.
+The plugin is a single module, `src/index.ts`. The repo's own `opencode.json` loads it as a
+file plugin, so you can test changes without building or publishing:
+
+```bash
+git clone git@github.com:aiandlabs/aiand-opencode-plugin.git
+cd aiand-opencode-plugin
+opencode run "say hi in one word"   # loads ./src/index.ts directly
+```
+
+To use your checkout from other projects, reference it by absolute path in your global config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/absolute/path/to/aiand-opencode-plugin/src/index.ts"]
+}
+```
+
+Build and smoke-test the published artifact shape (also run in CI):
+
+```bash
+npm install
+npm run build   # tsc → dist/
+npm run smoke   # asserts the compiled entry satisfies OpenCode's plugin loader
+```
+
+### Releasing
+
+Bump `version` in `package.json`, then publish a GitHub Release tagged `v<version>` — the
+`Publish` workflow builds, smoke-tests, verifies the tag matches `package.json`, and runs
+`npm publish` with provenance.
 
 ## Next steps
 
-- Publish as an npm package so others can install via `"plugin": ["aiand-opencode-plugin"]`.
 - Add an OAuth login method as an alternative to API keys.
