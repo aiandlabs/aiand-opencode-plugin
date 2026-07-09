@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ai& for OpenCode</title>
+  <meta name="description" content="Install OpenCode and the ai& provider plugin with a single command." />
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #14151a; --muted: #5b616e; --border: #e5e7eb;
+      --card: #f7f8fa; --accent: #4f46e5; --code-bg: #0d1117; --code-fg: #e6edf3;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117; --fg: #e6edf3; --muted: #9aa4b2; --border: #232a33;
+        --card: #161b22; --accent: #818cf8; --code-bg: #010409; --code-fg: #e6edf3;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 72px 24px 96px; }
+    .eyebrow { color: var(--accent); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 13px; margin: 0 0 12px; }
+    h1 { font-size: clamp(32px, 6vw, 46px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -0.02em; }
+    .lede { color: var(--muted); font-size: 18px; margin: 0 0 40px; }
+    h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 40px 0 12px; }
+    a { color: var(--accent); }
+
+    .cmd {
+      position: relative; background: var(--code-bg); color: var(--code-fg);
+      border-radius: 12px; padding: 18px 56px 18px 20px; overflow-x: auto;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 14px;
+      border: 1px solid var(--border);
+    }
+    .cmd code { white-space: pre; }
+    .cmd .prompt { color: #7d8590; user-select: none; }
+    button.copy {
+      position: absolute; top: 10px; right: 10px; border: 1px solid #30363d;
+      background: #21262d; color: #e6edf3; border-radius: 7px; padding: 6px 10px;
+      font-size: 12px; cursor: pointer;
+    }
+    button.copy:hover { background: #30363d; }
+    button.copy.done { color: #3fb950; border-color: #238636; }
+
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 4px 20px; }
+    ol { padding-left: 20px; }
+    ol li { margin: 12px 0; }
+    code.inline { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 13px; }
+    footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">ai& · OpenCode</p>
+    <h1>Add ai& to OpenCode in one line</h1>
+    <p class="lede">
+      Installs <a href="https://opencode.ai">OpenCode</a> (if you don't have it) and wires up the
+      <strong>ai&amp;</strong> provider plugin — live model catalog and API-key auth through the ai&amp; gateway.
+    </p>
+
+    <div class="cmd" id="cmd">
+      <button class="copy" id="copy">Copy</button>
+      <code><span class="prompt">$ </span>curl -fsSL https://opencode.aiand.com/install.sh | bash</code>
+    </div>
+
+    <h2>Then</h2>
+    <div class="card">
+      <ol>
+        <li><code class="inline">opencode auth login</code> → choose <strong>ai&amp;</strong> → paste your <code class="inline">sk-…</code> key</li>
+        <li><code class="inline">opencode</code> to start the TUI, or <code class="inline">opencode run "say hi"</code> for one-shot</li>
+      </ol>
+      <p style="color:var(--muted); font-size:14px;">
+        Get a key at <a href="https://aiand.com">aiand.com</a>. No key needed to browse the model
+        catalog — only to send a message.
+      </p>
+    </div>
+
+    <h2>What the script does</h2>
+    <div class="card">
+      <ol>
+        <li>Installs OpenCode via its official installer if it isn't already on your PATH.</li>
+        <li>Adds <code class="inline">@aiand/opencode-plugin</code> to your global OpenCode config
+          (<code class="inline">~/.config/opencode/opencode.json</code>) — OpenCode fetches it from npm on next run.</li>
+        <li>Sets a default ai&amp; model, only if you don't already have one. Your config is backed up first, and re-running is safe.</li>
+      </ol>
+    </div>
+
+    <footer>
+      Source &amp; docs on
+      <a href="https://github.com/aiandlabs/aiand-opencode-plugin">GitHub</a>.
+      Prefer manual setup? Add <code class="inline">"@aiand/opencode-plugin"</code> to your
+      <code class="inline">opencode.json</code> plugin list.
+    </footer>
+  </main>
+
+  <script>
+    const raw = 'curl -fsSL https://opencode.aiand.com/install.sh | bash';
+    const btn = document.getElementById('copy');
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(raw);
+        btn.textContent = 'Copied'; btn.classList.add('done');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+      } catch { btn.textContent = 'Copy failed'; }
+    });
+  </script>
+</body>
+</html>
