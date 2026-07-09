@@ -27,4 +27,4 @@ const hooks = await mod.AiandPlugin({})
 assert.equal(typeof hooks.config, "function", "plugin must return a `config` hook")
 assert.ok(hooks.auth?.provider === "aiand", "plugin must return an `auth` hook for provider `aiand`")
 
-console.log("smoke ok:", Object.keys(mod).join(", "))
+console.log("check-dist ok:", Object.keys(mod).join(", "))
