@@ -26,13 +26,15 @@ Reference the npm package in your `opencode.json` (per-project) or
 }
 ```
 
-Then:
+Then log in and run:
 
 ```bash
-export AIAND_API_KEY=sk-...        # or use `opencode auth login`
+opencode auth login                 # choose ai& → paste your sk-... key
 opencode                            # TUI
 opencode run "say hi in one word"   # one-shot
 ```
+
+(Non-interactive alternative: `export AIAND_API_KEY=sk-...` instead of `auth login`.)
 
 > **Version pinning:** a bare `"@aiand/opencode-plugin"` installs the latest version on first
 > run and keeps using that cached copy afterwards. To pin (or force an upgrade), use an explicit
@@ -40,8 +42,9 @@ opencode run "say hi in one word"   # one-shot
 
 ## Auth
 
-- **Interactive:** `opencode auth login` → choose **ai&** → paste your `sk-...` key.
-- **Non-interactive:** `export AIAND_API_KEY=sk-...`.
+- **Main path:** `opencode auth login` → choose **ai&** → paste your `sk-...` key. The key is
+  stored by OpenCode and used for every project.
+- **Alternative (non-interactive / CI):** `export AIAND_API_KEY=sk-...`.
 
 The model picker and catalog populate **without** a key (`/v1/api.json` is public); a key is
 only needed to actually send a message. Get one at [aiand.com](https://aiand.com).
