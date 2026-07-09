@@ -75,15 +75,24 @@ EOF
 }
 
 # Merge into an existing JSON config with jq. Adds the plugin if missing and
-# sets the default model only when none is present.
+# sets the default model only when none is present. Coerces a scalar `plugin`
+# into an array so a hand-written string value doesn't break the merge. On any
+# jq failure the original file is left untouched and the temp file cleaned up.
 merge_with_jq() {
   local file="$1" tmp
   tmp="$(mktemp)"
-  jq --arg plugin "$PLUGIN" --arg model "$DEFAULT_MODEL" '
-    .plugin = ((.plugin // []) + [$plugin] | unique_by(.)) |
-    if (.model // "") == "" then .model = $model else . end
-  ' "$file" > "$tmp" && mv "$tmp" "$file"
-  ok "Updated ${BOLD}$file${RESET} (plugin added; model kept/defaulted)"
+  if jq --arg plugin "$PLUGIN" --arg model "$DEFAULT_MODEL" '
+        (.plugin // []) as $p |
+        .plugin = ((if ($p | type) == "array" then $p else [$p] end) + [$plugin] | unique_by(.)) |
+        if (.model // "") == "" then .model = $model else . end
+      ' "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    mv "$tmp" "$file"
+    ok "Updated ${BOLD}$file${RESET} (plugin added; model kept/defaulted)"
+  else
+    rm -f "$tmp"
+    warn "Couldn't auto-edit this config safely — left it unchanged (backup kept)."
+    printf '%s\n' "    Add manually: ${DIM}\"plugin\": [\"$PLUGIN\"]${RESET}"
+  fi
 }
 
 configure() {
