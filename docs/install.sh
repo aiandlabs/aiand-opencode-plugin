@@ -74,7 +74,18 @@ EOF
   ok "Created ${BOLD}$file${RESET} with the ai& plugin"
 }
 
-# Merge into an existing JSON config with jq. Adds the plugin if missing and
+# True if the plugin (or a versioned spec of it, e.g. "…@0.1.0") is already
+# listed. Coerces a scalar `plugin` value to an array first so a hand-written
+# string doesn't break the scan.
+plugin_present() {
+  jq -e --arg p "$PLUGIN" '
+    ((.plugin // []) | if type == "array" then . else [.] end)
+    | any(.[]; type == "string" and (. == $p or startswith($p + "@")))
+  ' "$1" >/dev/null 2>&1
+}
+
+# Merge into an existing JSON config with jq. Appends the plugin (order matters:
+# hooks fire in array order, so preserve the user's list and add ours last) and
 # sets the default model only when none is present. Coerces a scalar `plugin`
 # into an array so a hand-written string value doesn't break the merge. On any
 # jq failure the original file is left untouched and the temp file cleaned up.
@@ -83,7 +94,7 @@ merge_with_jq() {
   tmp="$(mktemp)"
   if jq --arg plugin "$PLUGIN" --arg model "$DEFAULT_MODEL" '
         (.plugin // []) as $p |
-        .plugin = ((if ($p | type) == "array" then $p else [$p] end) + [$plugin] | unique_by(.)) |
+        .plugin = ((if ($p | type) == "array" then $p else [$p] end) + [$plugin]) |
         if (.model // "") == "" then .model = $model else . end
       ' "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
     mv "$tmp" "$file"
@@ -104,13 +115,15 @@ configure() {
   fi
 
   info "Found existing config: ${BOLD}$file${RESET}"
-  cp "$file" "$file.bak-$(date +%Y%m%d%H%M%S)"
-  ok "Backed it up"
 
   if have jq && jq -e . "$file" >/dev/null 2>&1; then
-    if jq -e --arg p "$PLUGIN" 'any((.plugin // [])[]; . == $p)' "$file" >/dev/null 2>&1; then
+    if plugin_present "$file"; then
       ok "Plugin already present — nothing to change"
     else
+      # Only back up when we're actually about to edit — a no-op re-run leaves
+      # no litter.
+      cp "$file" "$file.bak-$(date +%Y%m%d%H%M%S)"
+      ok "Backed it up"
       merge_with_jq "$file"
     fi
   else
