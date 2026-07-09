@@ -1,0 +1,51 @@
+{
+  "name": "@aiand/opencode-plugin",
+  "version": "0.1.0",
+  "description": "ai& provider plugin for OpenCode — live model catalog + API-key auth via the ai& gateway",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "check:dist": "node scripts/check-dist.mjs",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "aiand",
+    "llm",
+    "provider"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aiandlabs/aiand-opencode-plugin.git"
+  },
+  "homepage": "https://github.com/aiandlabs/aiand-opencode-plugin#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.17.15",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  }
+}

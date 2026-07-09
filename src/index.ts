@@ -3,8 +3,8 @@ import type { Plugin, Hooks } from "@opencode-ai/plugin"
 /**
  * ai& provider for OpenCode.
  *
- * Drop this file next to your `opencode.json` and reference it with
- * `"plugin": ["./aiand.ts"]`. OpenCode then gains an "ai&" provider that:
+ * Add `"plugin": ["@aiand/opencode-plugin"]` to your `opencode.json` and
+ * OpenCode gains an "ai&" provider that:
  *
  *   1. routes to the ai& gateway (api.aiand.com, OpenAI-compatible);
  *   2. logs in via `opencode auth login` → "ai&" → "ai& API Key";
@@ -20,12 +20,17 @@ const DEFAULT_BASE_URL = "https://api.aiand.com/v1"
 //   AIAND_BASE_URL=https://api.aiand.com/v1
 const baseURL = (process.env.AIAND_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
 
-type CatalogProvider = { npm?: string; models?: Record<string, unknown> }
+// The models map exactly as OpenCode's config schema expects it, derived from
+// the `config` hook's own signature so it tracks upstream type changes.
+type ConfigInput = Parameters<NonNullable<Hooks["config"]>>[0]
+type ProviderModels = NonNullable<NonNullable<ConfigInput["provider"]>[string]["models"]>
+
+type CatalogProvider = { npm?: string; models?: ProviderModels }
 
 // ai&'s public catalog (/v1/api.json) needs no key and is already in OpenCode's
 // models.dev shape. It holds a single provider entry whose `.models` map is
 // what we want.
-async function fetchCatalogModels(): Promise<Record<string, unknown>> {
+async function fetchCatalogModels(): Promise<ProviderModels> {
   try {
     // Bound the request so a hung gateway can't stall OpenCode startup.
     const res = await fetch(`${baseURL}/api.json`, { signal: AbortSignal.timeout(5000) })
