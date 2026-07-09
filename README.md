@@ -15,7 +15,13 @@ Requires [OpenCode](https://opencode.ai) (`curl -fsSL https://opencode.ai/instal
 
 ## Install
 
-Reference the npm package in your `opencode.json` (per-project) or
+**One line** (installs OpenCode if missing, then wires up the plugin):
+
+```bash
+curl -fsSL https://opencode.aiand.com/install.sh | bash
+```
+
+Or do it by hand — reference the npm package in your `opencode.json` (per-project) or
 `~/.config/opencode/opencode.jsonc` (global) — OpenCode installs it automatically on first run:
 
 ```json
