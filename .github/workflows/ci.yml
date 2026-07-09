@@ -15,4 +15,4 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run build
-      - run: npm run smoke
+      - run: npm run check:dist

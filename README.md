@@ -87,12 +87,12 @@ To use your checkout from other projects, reference it by absolute path in your 
 }
 ```
 
-Build and smoke-test the published artifact shape (also run in CI):
+Build and check the published artifact shape (also run in CI):
 
 ```bash
 npm install
-npm run build   # tsc → dist/
-npm run smoke   # asserts the compiled entry satisfies OpenCode's plugin loader
+npm run build        # tsc → dist/
+npm run check:dist   # asserts the compiled entry satisfies OpenCode's plugin loader
 ```
 
 ### Releasing

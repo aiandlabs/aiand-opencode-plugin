@@ -1,4 +1,4 @@
-// Smoke test for the built plugin. Guards the constraints OpenCode's npm
+// Checks the built plugin in dist/. Guards the constraints OpenCode's npm
 // plugin loader imposes on the published package:
 //
 //   1. package.json `main` must point at a real, importable compiled entry

@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs",
+    "check:dist": "node scripts/check-dist.mjs",
     "prepublishOnly": "tsc"
   },
   "keywords": [
