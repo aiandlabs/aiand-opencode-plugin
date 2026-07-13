@@ -8,6 +8,7 @@
 #   1. Installs OpenCode (https://opencode.ai) if it isn't already on your PATH.
 #   2. Adds the @aiand/opencode-plugin plugin to your global OpenCode config.
 #   3. Sets a default ai& model (only if you don't already have one set).
+#   4. Optionally enables OpenCode's built-in web search (asks first).
 #
 # It never overwrites an existing model choice and always backs up your config
 # before editing it. Re-running is safe (idempotent).
@@ -136,10 +137,95 @@ configure() {
   fi
 }
 
+# ---- 3. web search (optional) ----------------------------------------------
+# OpenCode's built-in web search (Exa, keyless) is gated behind the env var
+# OPENCODE_ENABLE_EXA=1 for third-party providers like ai&. We offer to add one
+# export line to the shell profile. The OpenCode Desktop app sources the login
+# shell's environment at startup, so the same line covers the GUI too.
+EXA_VAR="OPENCODE_ENABLE_EXA"
+EXA_MARKER=">>> aiand: enable OpenCode web search (Exa) >>>"
+WEBSEARCH_STATE="manual"   # enabled | already | skipped | manual
+
+# The shell profile the user's login shell reads (and that OpenCode Desktop's
+# startup probe sources). Empty for shells we don't want to auto-edit.
+websearch_profile() {
+  case "${SHELL:-}" in
+    */zsh)  printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    */bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *)      printf '%s\n' "" ;;
+  esac
+}
+
+websearch_manual_hint() {
+  case "${SHELL:-}" in
+    */fish) printf '%s\n' "    Enable manually: ${DIM}set -Ux $EXA_VAR 1${RESET}" ;;
+    *)      printf '%s\n' "    Enable manually: add ${DIM}export $EXA_VAR=1${RESET} to your shell profile" ;;
+  esac
+}
+
+enable_websearch() {
+  local profile; profile="$(websearch_profile)"
+
+  # Already on (env or a previous run's block) — nothing to ask.
+  case "${OPENCODE_ENABLE_EXA:-}" in
+    1 | true)
+      ok "Web search already enabled (\$$EXA_VAR is set)"
+      WEBSEARCH_STATE="already"
+      return
+      ;;
+  esac
+  if [ -n "$profile" ] && [ -f "$profile" ] && grep -qF "$EXA_MARKER" "$profile"; then
+    ok "Web search already enabled in ${BOLD}$profile${RESET}"
+    WEBSEARCH_STATE="already"
+    return
+  fi
+
+  info "Optional: web search"
+  printf '%s\n' "    OpenCode has built-in web search (via Exa — free, no API key)."
+  printf '%s\n' "    For ai& models it's off unless ${DIM}$EXA_VAR=1${RESET} is set."
+
+  # Shells we don't auto-edit (fish, others): the epilogue explains how.
+  if [ -z "$profile" ]; then
+    warn "Don't know how to edit your shell's profile automatically (\$SHELL=${SHELL:-unset})."
+    return
+  fi
+
+  printf '%s\n' "    Enabling adds one export line to ${BOLD}$profile${RESET}."
+
+  # stdin is the curl pipe, so prompt via the terminal directly. Without a
+  # terminal (CI etc.; the device may exist but not open) don't guess — leave
+  # it off; the epilogue explains how.
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    warn "No terminal to ask on — skipping."
+    return
+  fi
+  local answer=""
+  printf '%s' "${BLUE}==>${RESET} Enable web search? [Y/n] "
+  read -r answer < /dev/tty || answer="n"
+  case "$answer" in
+    n* | N*)
+      ok "Skipped web search"
+      WEBSEARCH_STATE="skipped"
+      return
+      ;;
+  esac
+
+  mkdir -p "$(dirname "$profile")"
+  cat >> "$profile" <<EOF
+
+# $EXA_MARKER
+export $EXA_VAR=1
+# <<< aiand <<<
+EOF
+  ok "Enabled web search in ${BOLD}$profile${RESET}"
+  WEBSEARCH_STATE="enabled"
+}
+
 # ---- run -------------------------------------------------------------------
 printf '%s\n\n' "${BOLD}ai& for OpenCode — installer${RESET}"
 install_opencode
 configure
+enable_websearch
 
 cat <<EOF
 
@@ -151,3 +237,20 @@ ${GREEN}${BOLD}Done.${RESET} Next steps:
   Get a key at ${BLUE}https://aiand.com${RESET}
   (Or, non-interactively: ${DIM}export AIAND_API_KEY=sk-...${RESET})
 EOF
+
+case "$WEBSEARCH_STATE" in
+  enabled)
+    cat <<EOF
+
+  ${BOLD}Web search:${RESET} enabled. Open a new terminal (or ${DIM}source $(websearch_profile)${RESET}) first.
+  Using the OpenCode Desktop app? It reads your shell profile at launch — just restart it.
+EOF
+    ;;
+  skipped | manual)
+    cat <<EOF
+
+  ${BOLD}Web search:${RESET} not enabled. To turn it on later:
+$(websearch_manual_hint)
+EOF
+    ;;
+esac

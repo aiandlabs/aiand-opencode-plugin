@@ -15,7 +15,8 @@ Requires [OpenCode](https://opencode.ai) (`curl -fsSL https://opencode.ai/instal
 
 ## Install
 
-**One line** (installs OpenCode if missing, then wires up the plugin):
+**One line** (installs OpenCode if missing, wires up the plugin, and offers to enable
+[web search](#web-search)):
 
 ```bash
 curl -fsSL https://opencode.aiand.com/install.sh | bash
@@ -55,6 +56,23 @@ opencode run "say hi in one word"   # one-shot
 The model picker and catalog populate **without** a key (`/v1/api.json` is public); a key is
 only needed to actually send a message. Get one at [aiand.com](https://aiand.com).
 
+## Web search
+
+OpenCode ships a built-in web search tool (via [Exa](https://exa.ai) — free, no API key), but for
+third-party providers like ai& it's gated behind an environment variable:
+
+```bash
+export OPENCODE_ENABLE_EXA=1
+```
+
+The [installer](#install) offers to add this line to your shell profile (`~/.zshrc` / `~/.bashrc`)
+for you — it's the "Enable web search?" question. To set it up by hand, add the export line to
+your shell profile and open a new terminal (fish: `set -Ux OPENCODE_ENABLE_EXA 1`).
+
+**OpenCode Desktop (GUI):** no extra steps — the app sources your login shell's environment at
+startup, so the same profile line applies. Restart the app after adding it. If your setup somehow
+doesn't pick it up, launching the app from a terminal where the variable is exported also works.
+
 ## How it works
 
 The plugin uses two OpenCode hooks:
@@ -75,6 +93,7 @@ The plugin uses two OpenCode hooks:
 |---|---|---|
 | `AIAND_API_KEY` | — | Your ai& API key (alternative to `opencode auth login`). |
 | `AIAND_BASE_URL` | `https://api.aiand.com/v1` | Override the gateway base URL. |
+| `OPENCODE_ENABLE_EXA` | — | Set to `1` to enable OpenCode's built-in [web search](#web-search) (read by OpenCode itself, not the plugin). |
 
 ## Contributing / local development
 
