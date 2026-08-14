@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { PDFDocument } from "pdf-lib"
 
+import { preparePdfChunks } from "../dist/pdf-chunks.js"
 import { createPdfUploadFetch } from "../dist/pdf-upload-fetch.js"
 
 const BASE_URL = "https://api.aiand.com/v1"
@@ -19,8 +20,8 @@ const SUPPORTED_CATALOG = {
   },
 }
 
-function createTestPdfUploadFetch(options) {
-  return createPdfUploadFetch({ catalogSnapshot: SUPPORTED_CATALOG, ...options })
+function createTestPdfUploadFetch(options, dependencies) {
+  return createPdfUploadFetch({ catalogSnapshot: SUPPORTED_CATALOG, ...options }, dependencies)
 }
 
 function chatBody(parts) {
@@ -529,11 +530,12 @@ test("reuses one settled chunk manifest for sequential references to a 101-page 
   }
 })
 
-test("shares one in-flight chunk preparation for concurrent references to a 101-page source", async () => {
+test("invalidates a mixed-expiry manifest and reuses its still-safe leaf", async () => {
   const aiand = recordingAiand({
-    uploadResponse: async (count) => {
-      await new Promise((resolve) => setImmediate(resolve))
-      return jsonResponse({ id: `file-chunk-${count}`, expires_at: 1786665600 })
+    uploadResponse: (count) => {
+      if (count === 1) return jsonResponse({ id: "file-chunk-1", expires_at: 1786665600 })
+      if (count === 2) return jsonResponse({ id: "file-chunk-2", expires_at: 1786660030 })
+      return jsonResponse({ id: "file-chunk-2-refreshed", expires_at: 1786665600 })
     },
   })
   const fetch = createTestPdfUploadFetch({
@@ -543,8 +545,55 @@ test("shares one in-flight chunk preparation for concurrent references to a 101-
   })
   const dataURL = await pdfDataURL(101)
 
+  await sendPdf(fetch, dataURL)
+  await sendPdf(fetch, dataURL)
+
+  const uploads = aiand.calls.filter((call) => call.url === `${BASE_URL}/files`)
+  assert.equal(uploads.length, 3)
+  const uploadedPageCounts = []
+  for (const upload of uploads) {
+    const uploadedFile = upload.init.body.get("file")
+    const uploadedDocument = await PDFDocument.load(await uploadedFile.arrayBuffer())
+    uploadedPageCounts.push(uploadedDocument.getPageCount())
+  }
+  assert.deepEqual(uploadedPageCounts, [100, 1, 1])
+
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content.map((part) => part.file.file_id)),
+    [
+      ["file-chunk-1", "file-chunk-2"],
+      ["file-chunk-1", "file-chunk-2-refreshed"],
+    ],
+  )
+})
+
+test("shares one in-flight chunk preparation for concurrent references to a 101-page source", async () => {
+  let preparationCount = 0
+  const aiand = recordingAiand({
+    uploadResponse: async (count) => {
+      await new Promise((resolve) => setImmediate(resolve))
+      return jsonResponse({ id: `file-chunk-${count}`, expires_at: 1786665600 })
+    },
+  })
+  const fetch = createTestPdfUploadFetch(
+    {
+      baseURL: BASE_URL,
+      fetchImpl: aiand.fetchImpl,
+      now: () => 1786660000 * 1000,
+    },
+    {
+      preparePdfChunks: async (bytes) => {
+        preparationCount += 1
+        return preparePdfChunks(bytes)
+      },
+    },
+  )
+  const dataURL = await pdfDataURL(101)
+
   await Promise.all([sendPdf(fetch, dataURL), sendPdf(fetch, dataURL)])
 
+  assert.equal(preparationCount, 1)
   assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
   const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
   assert.equal(chats.length, 2)

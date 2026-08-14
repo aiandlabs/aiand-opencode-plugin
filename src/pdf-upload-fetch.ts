@@ -4,6 +4,10 @@ import { preparePdfChunks } from "./pdf-chunks.js"
 
 type Fetch = typeof globalThis.fetch
 
+type PdfUploadFetchDependencies = {
+  preparePdfChunks: typeof preparePdfChunks
+}
+
 export type PdfUploadFetchOptions = {
   baseURL: string
   catalogSnapshot: CatalogSnapshot
@@ -148,7 +152,10 @@ async function uploadError(response: Response) {
   return new Error(`[aiand] PDF upload failed: HTTP ${response.status}${suffix}`)
 }
 
-export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
+export function createPdfUploadFetch(
+  options: PdfUploadFetchOptions,
+  dependencies: PdfUploadFetchDependencies = { preparePdfChunks },
+): Fetch {
   const baseURL = options.baseURL.replace(/\/+$/, "")
   const chatURL = `${baseURL}/chat/completions`
   const filesURL = `${baseURL}/files`
@@ -240,7 +247,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
     if (pending) return pending
 
     const preparation = (async () => {
-      const chunks = await preparePdfChunks(bytes)
+      const chunks = await dependencies.preparePdfChunks(bytes)
       const next: FileLease[] = []
       for (const chunk of chunks) {
         const chunkBytes = Buffer.from(chunk.bytes)
