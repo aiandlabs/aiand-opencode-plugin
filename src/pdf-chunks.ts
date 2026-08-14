@@ -19,8 +19,13 @@ export async function preparePdfChunks(
   bytes: Uint8Array,
   options: PreparePdfChunksOptions = {},
 ): Promise<PdfChunk[]> {
-  const maxPagesPerChunk = options.maxPagesPerChunk ?? DEFAULT_MAX_PAGES
-  const maxChunkBytes = options.maxChunkBytes ?? DEFAULT_MAX_BYTES
+  const requestedPages = options.maxPagesPerChunk ?? DEFAULT_MAX_PAGES
+  const requestedBytes = options.maxChunkBytes ?? DEFAULT_MAX_BYTES
+  if (!Number.isInteger(requestedPages) || requestedPages <= 0 || !Number.isFinite(requestedBytes) || requestedBytes <= 0) {
+    throw new Error("[aiand] PDF split failed: invalid chunk options")
+  }
+  const maxPagesPerChunk = Math.min(requestedPages, DEFAULT_MAX_PAGES)
+  const maxChunkBytes = Math.min(requestedBytes, DEFAULT_MAX_BYTES)
 
   let source: PDFDocument
   try {
@@ -34,7 +39,7 @@ export async function preparePdfChunks(
     throw new Error("[aiand] PDF split failed: document has no pages")
   }
 
-  if (pageCount <= maxPagesPerChunk) {
+  if (pageCount <= DEFAULT_MAX_PAGES) {
     if (bytes.byteLength > maxChunkBytes) {
       throw new Error("[aiand] PDF split failed: chunk exceeds 104857600 bytes")
     }

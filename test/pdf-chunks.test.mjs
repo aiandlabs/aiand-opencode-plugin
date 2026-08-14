@@ -25,6 +25,8 @@ for (const pageCount of [101, 201]) {
   test(`splits ${pageCount} pages into ordered chunks`, async () => {
     const source = await makePdf(pageCount)
     const chunks = await preparePdfChunks(source)
+    assert.deepEqual(chunks.map((chunk) => [chunk.firstPage, chunk.lastPage]),
+      pageCount === 101 ? [[1, 100], [101, 101]] : [[1, 100], [101, 200], [201, 201]])
     assert.deepEqual(chunks.map((chunk) => chunk.lastPage - chunk.firstPage + 1),
       pageCount === 101 ? [100, 1] : [100, 100, 1])
     const widths = []
@@ -49,11 +51,32 @@ test("rejects a zero-page PDF with a fixed error", async () => {
   const offset1 = header.length
   const offset2 = offset1 + object1.length
   const xref = `xref\n0 3\n0000000000 65535 f \n${String(offset1).padStart(10, "0")} 00000 n \n${String(offset2).padStart(10, "0")} 00000 n \n`
-  const trailer = "trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n" + (offset2 + object2.length + xref.length) + "\n%%EOF\n"
+  const trailer = "trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n" + (offset2 + object2.length) + "\n%%EOF\n"
   await assert.rejects(preparePdfChunks(Buffer.from(header + object1 + object2 + xref + trailer)), {
     message: "[aiand] PDF split failed: document has no pages",
   })
 })
+
+test("keeps a 100-page source unchanged when a smaller page option is supplied", async () => {
+  const source = await makePdf(100)
+  const chunks = await preparePdfChunks(source, { maxPagesPerChunk: 1 })
+  assert.equal(chunks.length, 1)
+  assert.deepEqual(Buffer.from(chunks[0].bytes), source)
+  assert.deepEqual([chunks[0].firstPage, chunks[0].lastPage], [1, 100])
+})
+
+test("caps an oversized page option at 100 pages", async () => {
+  const chunks = await preparePdfChunks(await makePdf(101), { maxPagesPerChunk: 101 })
+  assert.deepEqual(chunks.map((chunk) => chunk.lastPage - chunk.firstPage + 1), [100, 1])
+})
+
+for (const options of [{ maxPagesPerChunk: 0 }, { maxPagesPerChunk: NaN }, { maxChunkBytes: 0 }, { maxChunkBytes: NaN }]) {
+  test(`rejects invalid options: ${JSON.stringify(options)}`, async () => {
+    await assert.rejects(preparePdfChunks(await makePdf(1), options), {
+      message: "[aiand] PDF split failed: invalid chunk options",
+    })
+  })
+}
 
 test("rejects chunks over the configured byte limit", async () => {
   const source = await makePdf(1)
