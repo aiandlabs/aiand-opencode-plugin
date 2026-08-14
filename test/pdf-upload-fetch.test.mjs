@@ -127,6 +127,48 @@ test("accepts a large valid PDF without regex size failures", async () => {
   assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 1)
 })
 
+test("translates an inline PDF carried by a Request input", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const request = new Request(CHAT_URL, {
+    method: "POST",
+    headers: { authorization: "Bearer request-key", "content-type": "application/json" },
+    body: JSON.stringify(chatBody([{ type: "file", file: { file_data: PDF_DATA_URL } }])),
+  })
+
+  const response = await fetch(request)
+
+  assert.equal(response.status, 200)
+  assert.equal(aiand.calls.length, 2)
+  assert.equal(aiand.calls[0].init.headers.get("authorization"), "Bearer request-key")
+  const sent = JSON.parse(aiand.calls[1].init.body)
+  assert.deepEqual(sent.messages[0].content, [{ type: "file", file: { file_id: "file-test-1" } }])
+})
+
+test("applies init overrides when translating a Request input", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const request = new Request(CHAT_URL, {
+    headers: { authorization: "Bearer old-key", "x-original": "discarded" },
+  })
+
+  await fetch(request, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer override-key",
+      "content-type": "application/json",
+      "x-override": "preserved",
+    },
+    body: JSON.stringify(chatBody([{ type: "file", file: { file_data: PDF_DATA_URL } }])),
+  })
+
+  const uploadHeaders = aiand.calls[0].init.headers
+  assert.equal(uploadHeaders.get("authorization"), "Bearer override-key")
+  assert.equal(uploadHeaders.get("x-override"), "preserved")
+  assert.equal(uploadHeaders.has("x-original"), false)
+  assert.equal(aiand.calls.length, 2)
+})
+
 test("rejects malformed PDF-shaped parts before any network request", async (t) => {
   const invalid = [
     {

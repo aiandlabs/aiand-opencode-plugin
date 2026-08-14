@@ -181,16 +181,29 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
 
   return async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
-    if (url !== chatURL || init?.method?.toUpperCase() !== "POST" || typeof init.body !== "string") {
+    if (url !== chatURL) {
       return fetchImpl(input, init)
     }
 
-    const body = JSON.parse(init.body) as {
+    const effectiveRequest = new Request(input instanceof Request ? input.clone() : input, init)
+    if (effectiveRequest.method.toUpperCase() !== "POST") return fetchImpl(input, init)
+
+    let serializedBody: string
+    if (typeof init?.body === "string") {
+      serializedBody = init.body
+    } else if (init?.body !== undefined) {
+      return fetchImpl(input, init)
+    } else if (input instanceof Request) {
+      serializedBody = await effectiveRequest.clone().text()
+    } else {
+      return fetchImpl(input, init)
+    }
+
+    const body = JSON.parse(serializedBody) as {
       messages?: Array<{ content?: unknown }>
     }
 
-    const requestHeaders = new Headers(input instanceof Request ? input.headers : undefined)
-    new Headers(init.headers).forEach((value, key) => requestHeaders.set(key, value))
+    const requestHeaders = new Headers(effectiveRequest.headers)
 
     async function transformedBody() {
       const digests = new Set<string>()
@@ -243,8 +256,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
 
       const headers = new Headers(requestHeaders)
       headers.delete("content-length")
-      const response = await fetchImpl(input, {
-        ...init,
+      const response = await fetchImpl(effectiveRequest, {
         headers,
         body: transformed.serialized,
       })
