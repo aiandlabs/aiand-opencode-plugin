@@ -95,6 +95,8 @@ The states are defined exactly:
 - `unsupported`: an exact entry explicitly has `attachment === false`, or it has a present input-modality array that does not contain `pdf`, or the model is in the process-local runtime-rejection set.
 - `unknown`: the catalog fetch failed, the model ID is missing or non-string, no exact entry exists, or the entry's relevant fields are missing, malformed, or contradictory without an explicit negative signal.
 
+For a string-valued exact model ID, a process-local runtime rejection is explicit negative evidence and takes precedence over unavailable or malformed catalog metadata.
+
 Only `supported` opens the side-effect gate. `unsupported` and `unknown` fail before document decoding or any network request. Unknown capability never means "upload and let Aiand decide" because that would create retained user data and cost without positive authorization.
 
 Internally, request preparation uses discriminated states: a genuine passthrough request with no recognized PDF, a recognized request with unresolved PDF slots, and an authorized request plan. PDF decoding and upload helpers consume only an authorized plan. This makes an unresolved PDF structurally ineligible for either Files API upload or rewritten chat dispatch.
