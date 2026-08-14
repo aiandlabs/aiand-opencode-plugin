@@ -85,7 +85,7 @@ the aggregate pages and document context fit in its own limits.
 Byte-identical PDFs share their ordered upload result within an OpenCode process, including
 concurrent title and agent requests.
 
-The process-local cache retains only a SHA-256 content key, the ai& file ID, and its expiry;
+The process-local cache retains only SHA-256 content keys, ordered ai& file IDs, and their expiries;
 it does not retain PDF bytes or filenames after an upload settles. The cache is not persisted
 across OpenCode restarts. Uploaded documents follow ai&'s server-side retention policy (30 days
 by default); this behavior is unchanged.
