@@ -302,6 +302,52 @@ test("turns an invalid upload response into a safe adapter error", async () => {
   assert.equal(aiand.calls[0].url, `${BASE_URL}/files`)
 })
 
+test("wraps upload transport failures without exposing transport details", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: () => {
+      throw new Error("connect to secret.internal.example failed")
+    },
+  })
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(sendPdf(fetch), {
+    message: "[aiand] PDF upload failed: network request failed",
+  })
+})
+
+test("rejects a null upload response with a staged adapter error", async () => {
+  const aiand = recordingAiand({ uploadResponse: () => jsonResponse(null) })
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(sendPdf(fetch), {
+    message: "[aiand] PDF upload response failed: expected an object",
+  })
+})
+
+test("rejects a blank upload file id", async () => {
+  const aiand = recordingAiand({ uploadResponse: () => jsonResponse({ id: "   " }) })
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(sendPdf(fetch), {
+    message: "[aiand] PDF upload response failed: missing file id",
+  })
+})
+
+test("redacts arbitrary provider messages from upload errors", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: () =>
+      jsonResponse(
+        { error: { code: "invalid_request_error", message: "manual.pdf for jetha was rejected" } },
+        { status: 400 },
+      ),
+  })
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(sendPdf(fetch), {
+    message: "[aiand] PDF upload failed: HTTP 400 (invalid_request_error)",
+  })
+})
+
 test("reuses one upload for sequential references to identical PDF bytes", async () => {
   const aiand = recordingAiand()
   const fetch = createPdfUploadFetch({
@@ -362,7 +408,12 @@ test("does not cache failed uploads", async () => {
     uploadResponse: (count) =>
       count === 1
         ? jsonResponse(
-            { error: { code: "invalid_request_error", message: "PDFs are capped at 100 pages" } },
+            {
+              error: {
+                code: "invalid_value",
+                message: '{"detail":"PDF has 120 pages; limit is 100"}',
+              },
+            },
             { status: 400 },
           )
         : jsonResponse({ id: "file-recovered", expires_at: 1786665600 }),
@@ -371,7 +422,7 @@ test("does not cache failed uploads", async () => {
 
   await assert.rejects(
     sendPdf(fetch),
-    /\[aiand\] PDF upload failed: HTTP 400 \(invalid_request_error: PDFs are capped at 100 pages\)/,
+    /\[aiand\] PDF upload failed: HTTP 400 \(invalid_value: PDF has 120 pages; limit is 100\)/,
   )
   const response = await sendPdf(fetch)
 
@@ -401,6 +452,25 @@ test("re-uploads after the cached file lease expires", async () => {
   assert.equal(chatBodies[0].messages[0].content[0].file.file_id, "file-1")
   assert.equal(chatBodies[1].messages[0].content[0].file.file_id, "file-1")
   assert.equal(chatBodies[2].messages[0].content[0].file.file_id, "file-2")
+})
+
+test("uses the fallback lease for an unsafe returned expiry", async () => {
+  let now = 1_786_660_000_000
+  const aiand = recordingAiand({
+    uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: Number.MAX_VALUE }),
+  })
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => now,
+    expirySafetyMs: 0,
+  })
+
+  await sendPdf(fetch)
+  now += 30 * 24 * 60 * 60 * 1000
+  await sendPdf(fetch)
+
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
 })
 
 test("refreshes a stale file reference and retries chat once", async (t) => {

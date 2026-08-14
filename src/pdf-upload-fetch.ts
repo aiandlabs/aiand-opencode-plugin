@@ -89,23 +89,37 @@ function decodePdf(dataURL: string, maxPdfBytes: number) {
   }
 }
 
-function safeErrorField(value: unknown) {
+function safeErrorCode(value: unknown) {
+  return typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value) ? value : undefined
+}
+
+function safePageLimitMessage(value: unknown) {
   if (typeof value !== "string") return undefined
-  const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim()
-  return sanitized.length > 0 ? sanitized.slice(0, 240) : undefined
+  let message = value
+  try {
+    const nested = JSON.parse(value) as unknown
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const detail = (nested as { detail?: unknown }).detail
+      if (typeof detail === "string") message = detail
+    }
+  } catch {
+    // Plain provider messages are handled by the same strict allowlist below.
+  }
+  return /^PDF has [1-9][0-9]{0,5} pages; limit is [1-9][0-9]{0,5}$/.test(message) ? message : undefined
 }
 
 async function uploadError(response: Response) {
   let detail: string | undefined
   try {
-    const payload = (await response.json()) as { error?: { code?: unknown; message?: unknown } | unknown }
-    if (payload.error && typeof payload.error === "object") {
-      const error = payload.error as { code?: unknown; message?: unknown }
-      const code = safeErrorField(error.code)
-      const message = safeErrorField(error.message)
-      detail = code && message ? `${code}: ${message}` : code ?? message
-    } else {
-      detail = safeErrorField(payload.error)
+    const payload = (await response.json()) as unknown
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const error = (payload as { error?: unknown }).error
+      if (error && typeof error === "object" && !Array.isArray(error)) {
+        const fields = error as { code?: unknown; message?: unknown }
+        const code = safeErrorCode(fields.code)
+        const pageLimit = safePageLimitMessage(fields.message)
+        detail = code && pageLimit ? `${code}: ${pageLimit}` : code
+      }
     }
   } catch {
     // Keep non-JSON provider responses out of user-facing errors.
@@ -135,29 +149,39 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
     )
     form.append("purpose", "document")
 
-    const response = await fetchImpl(filesURL, {
-      method: "POST",
-      headers,
-      body: form,
-      redirect: "error",
-    })
+    let response: Response
+    try {
+      response = await fetchImpl(filesURL, {
+        method: "POST",
+        headers,
+        body: form,
+        redirect: "error",
+      })
+    } catch {
+      throw new Error("[aiand] PDF upload failed: network request failed")
+    }
     if (!response.ok) throw await uploadError(response)
 
-    let uploaded: { id?: unknown; expires_at?: unknown }
+    let uploaded: unknown
     try {
-      uploaded = (await response.json()) as { id?: unknown; expires_at?: unknown }
+      uploaded = await response.json()
     } catch {
       throw new Error("[aiand] PDF upload response failed: expected JSON")
     }
-    if (typeof uploaded.id !== "string" || uploaded.id.length === 0) {
+    if (!uploaded || typeof uploaded !== "object" || Array.isArray(uploaded)) {
+      throw new Error("[aiand] PDF upload response failed: expected an object")
+    }
+    const fields = uploaded as { id?: unknown; expires_at?: unknown }
+    if (typeof fields.id !== "string" || fields.id.trim().length === 0) {
       throw new Error("[aiand] PDF upload response failed: missing file id")
     }
 
+    const returnedExpiryMs = typeof fields.expires_at === "number" ? fields.expires_at * 1000 : Number.NaN
     const expiresAtMs =
-      typeof uploaded.expires_at === "number" && Number.isFinite(uploaded.expires_at) && uploaded.expires_at > 0
-        ? uploaded.expires_at * 1000
+      Number.isSafeInteger(returnedExpiryMs) && returnedExpiryMs > 0
+        ? returnedExpiryMs
         : now() + DEFAULT_FILE_TTL_MS
-    return { fileID: uploaded.id, expiresAtMs }
+    return { fileID: fields.id, expiresAtMs }
   }
 
   async function resolveLease(bytes: Buffer, digest: string, headers: Headers): Promise<FileLease> {
