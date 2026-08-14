@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { PDFDocument } from "pdf-lib"
 
 import { createPdfUploadFetch } from "../dist/pdf-upload-fetch.js"
 
 const BASE_URL = "https://api.aiand.com/v1"
 const CHAT_URL = `${BASE_URL}/chat/completions`
-const PDF_BYTES = Buffer.from("%PDF-1.4\nPDF smoke test\n%%EOF\n", "utf8")
+const PDF_BYTES = await createPdfBytes(1)
 const PDF_DATA_URL = `data:application/pdf;base64,${PDF_BYTES.toString("base64")}`
 const SUPPORTED_CATALOG = {
   available: true,
@@ -76,6 +77,17 @@ function sendPdf(fetch, dataURL = PDF_DATA_URL) {
   })
 }
 
+async function createPdfBytes(pageCount, pageSize = [72, 72]) {
+  const document = await PDFDocument.create()
+  for (let page = 0; page < pageCount; page += 1) document.addPage(pageSize)
+  return Buffer.from(await document.save())
+}
+
+async function pdfDataURL(pageCount, pageSize = [72, 72]) {
+  const bytes = await createPdfBytes(pageCount, pageSize)
+  return `data:application/pdf;base64,${bytes.toString("base64")}`
+}
+
 test("uploads an inline PDF and sends only its file_id to chat", async () => {
   const aiand = recordingAiand()
   const fetch = createTestPdfUploadFetch({
@@ -127,9 +139,70 @@ test("uploads an inline PDF and sends only its file_id to chat", async () => {
   assert.equal(chat.init.headers.has("content-length"), false)
 })
 
+test("splits a 101-page PDF into sequential ordered uploads and adjacent chat references", async () => {
+  const calls = []
+  let activeUploads = 0
+  let maximumActiveUploads = 0
+  const fetchImpl = async (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input)
+    calls.push({ url, init })
+    if (url === `${BASE_URL}/files`) {
+      activeUploads += 1
+      maximumActiveUploads = Math.max(maximumActiveUploads, activeUploads)
+      await new Promise((resolve) => setImmediate(resolve))
+      activeUploads -= 1
+      const uploadNumber = calls.filter((call) => call.url === `${BASE_URL}/files`).length
+      return jsonResponse({ id: `file-chunk-${uploadNumber}`, expires_at: 1786665600 })
+    }
+    return new Response("data: [DONE]\n\n", {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })
+  }
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl,
+    now: () => 1786660000 * 1000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  const response = await fetch(CHAT_URL, {
+    method: "POST",
+    headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+    body: JSON.stringify(
+      chatBody([
+        { type: "text", text: "before" },
+        { type: "file", file: { filename: "long.pdf", file_data: dataURL } },
+        { type: "text", text: "after" },
+      ]),
+    ),
+  })
+
+  assert.equal(response.status, 200)
+  const uploads = calls.filter((call) => call.url === `${BASE_URL}/files`)
+  assert.equal(uploads.length, 2)
+  const uploadedPageCounts = []
+  for (const upload of uploads) {
+    const uploadedFile = upload.init.body.get("file")
+    const uploadedDocument = await PDFDocument.load(await uploadedFile.arrayBuffer())
+    uploadedPageCounts.push(uploadedDocument.getPageCount())
+  }
+  assert.deepEqual(uploadedPageCounts, [100, 1])
+  assert.equal(maximumActiveUploads, 1)
+
+  const chat = calls.find((call) => call.url === CHAT_URL)
+  const sent = JSON.parse(chat.init.body)
+  assert.deepEqual(sent.messages[0].content, [
+    { type: "text", text: "before" },
+    { type: "file", file: { file_id: "file-chunk-1" } },
+    { type: "file", file: { file_id: "file-chunk-2" } },
+    { type: "text", text: "after" },
+  ])
+  assert.equal(chat.init.body.includes("data:application/pdf;base64"), false)
+})
+
 test("accepts a large valid PDF without regex size failures", async () => {
-  const largePdf = Buffer.alloc(14 * 1024 * 1024)
-  PDF_BYTES.subarray(0, 5).copy(largePdf)
+  const largePdf = Buffer.concat([PDF_BYTES, Buffer.alloc(14 * 1024 * 1024, 0x20)])
   const dataURL = `data:application/pdf;base64,${largePdf.toString("base64")}`
   const aiand = recordingAiand()
   const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
@@ -431,6 +504,126 @@ test("redacts arbitrary provider messages from upload errors", async () => {
   })
 })
 
+test("reuses one settled chunk manifest for sequential references to a 101-page source", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: (count) => jsonResponse({ id: `file-chunk-${count}`, expires_at: 1786665600 }),
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1786660000 * 1000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  await sendPdf(fetch, dataURL)
+  await sendPdf(fetch, dataURL)
+
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.equal(chats.length, 2)
+  for (const chat of chats) {
+    assert.deepEqual(
+      chat.messages[0].content.map((part) => part.file.file_id),
+      ["file-chunk-1", "file-chunk-2"],
+    )
+  }
+})
+
+test("shares one in-flight chunk preparation for concurrent references to a 101-page source", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: async (count) => {
+      await new Promise((resolve) => setImmediate(resolve))
+      return jsonResponse({ id: `file-chunk-${count}`, expires_at: 1786665600 })
+    },
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1786660000 * 1000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  await Promise.all([sendPdf(fetch, dataURL), sendPdf(fetch, dataURL)])
+
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.equal(chats.length, 2)
+  for (const chat of chats) {
+    assert.deepEqual(
+      chat.messages[0].content.map((part) => part.file.file_id),
+      ["file-chunk-1", "file-chunk-2"],
+    )
+  }
+})
+
+test("keeps manifests for distinct 101-page sources independent", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: (count) => jsonResponse({ id: `file-chunk-${count}`, expires_at: 1786665600 }),
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1786660000 * 1000,
+  })
+  const firstSource = await pdfDataURL(101, [72, 72])
+  const secondSource = await pdfDataURL(101, [73, 72])
+
+  await sendPdf(fetch, firstSource)
+  await sendPdf(fetch, secondSource)
+
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 4)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content.map((part) => part.file.file_id)),
+    [
+      ["file-chunk-1", "file-chunk-2"],
+      ["file-chunk-3", "file-chunk-4"],
+    ],
+  )
+})
+
+test("retries only the failed leaf after a partial chunk upload failure", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: (count) => {
+      if (count === 1) return jsonResponse({ id: "file-chunk-1", expires_at: 1786665600 })
+      if (count === 2) return jsonResponse({ error: { code: "server_error" } }, { status: 500 })
+      return jsonResponse({ id: "file-chunk-2", expires_at: 1786665600 })
+    },
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1786660000 * 1000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  await assert.rejects(sendPdf(fetch, dataURL), {
+    message: "[aiand] PDF upload failed: HTTP 500 (server_error)",
+  })
+  assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 0)
+
+  const response = await sendPdf(fetch, dataURL)
+
+  assert.equal(response.status, 200)
+  const uploads = aiand.calls.filter((call) => call.url === `${BASE_URL}/files`)
+  assert.equal(uploads.length, 3)
+  const uploadedPageCounts = []
+  for (const upload of uploads) {
+    const uploadedFile = upload.init.body.get("file")
+    const uploadedDocument = await PDFDocument.load(await uploadedFile.arrayBuffer())
+    uploadedPageCounts.push(uploadedDocument.getPageCount())
+  }
+  assert.deepEqual(uploadedPageCounts, [100, 1, 1])
+
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL)
+  assert.equal(chats.length, 1)
+  const sent = JSON.parse(chats[0].init.body)
+  assert.deepEqual(
+    sent.messages[0].content.map((part) => part.file.file_id),
+    ["file-chunk-1", "file-chunk-2"],
+  )
+})
+
 test("reuses one upload for sequential references to identical PDF bytes", async () => {
   const aiand = recordingAiand()
   const fetch = createTestPdfUploadFetch({
@@ -478,7 +671,7 @@ test("uploads distinct PDF bytes separately", async () => {
     uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: 1786665600 }),
   })
   const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
-  const other = Buffer.from("%PDF-1.4\na different document\n%%EOF\n").toString("base64")
+  const other = (await createPdfBytes(1, [73, 72])).toString("base64")
 
   await sendPdf(fetch)
   await sendPdf(fetch, `data:application/pdf;base64,${other}`)

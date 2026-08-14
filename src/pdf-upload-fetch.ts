@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { decidePdfCapability, type CatalogSnapshot } from "./pdf-capability.js"
+import { preparePdfChunks } from "./pdf-chunks.js"
 
 type Fetch = typeof globalThis.fetch
 
@@ -158,6 +159,8 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
   const { catalogSnapshot, rejectedModels } = options
   const leases = new Map<string, FileLease>()
   const uploads = new Map<string, Promise<FileLease>>()
+  const manifests = new Map<string, FileLease[]>()
+  const preparations = new Map<string, Promise<FileLease[]>>()
 
   async function uploadPdf(bytes: Buffer, digest: string, headers: Headers): Promise<FileLease> {
     const form = new FormData()
@@ -222,6 +225,39 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
     }
   }
 
+  async function resolveDocument(
+    bytes: Buffer,
+    sourceDigest: string,
+    headers: Headers,
+  ): Promise<FileLease[]> {
+    const manifest = manifests.get(sourceDigest)
+    if (manifest && manifest.every((lease) => now() < lease.expiresAtMs - expirySafetyMs)) {
+      return manifest
+    }
+    if (manifest) manifests.delete(sourceDigest)
+
+    const pending = preparations.get(sourceDigest)
+    if (pending) return pending
+
+    const preparation = (async () => {
+      const chunks = await preparePdfChunks(bytes)
+      const next: FileLease[] = []
+      for (const chunk of chunks) {
+        const chunkBytes = Buffer.from(chunk.bytes)
+        const chunkDigest = createHash("sha256").update(chunkBytes).digest("hex")
+        next.push(await resolveLease(chunkBytes, chunkDigest, headers))
+      }
+      manifests.set(sourceDigest, next)
+      return next
+    })()
+    preparations.set(sourceDigest, preparation)
+    try {
+      return await preparation
+    } finally {
+      if (preparations.get(sourceDigest) === preparation) preparations.delete(sourceDigest)
+    }
+  }
+
   return async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
     if (url !== chatURL) {
@@ -274,25 +310,26 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
           if (!message || typeof message !== "object" || Array.isArray(message)) return message
           const chatMessage = message as { content?: unknown }
           if (!Array.isArray(chatMessage.content)) return message
-          const content = await Promise.all(
+          const contentParts = await Promise.all(
             chatMessage.content.map(async (part) => {
               const pdf = inlinePdfPart(part)
-              if (!pdf) return part
+              if (!pdf) return [part]
 
               const { bytes, digest } = decodePdf(pdf.file.file_data, maxPdfBytes)
               const uploadHeaders = new Headers(requestHeaders)
               uploadHeaders.delete("content-type")
               uploadHeaders.delete("content-length")
-              const lease = await resolveLease(bytes, digest, uploadHeaders)
+              const documentLeases = await resolveDocument(bytes, digest, uploadHeaders)
 
-              references.set(digest, lease.fileID)
+              if (documentLeases.length === 1) references.set(digest, documentLeases[0].fileID)
               transformed = true
-              return {
+              return documentLeases.map((lease) => ({
                 ...pdf,
                 file: { file_id: lease.fileID },
-              }
+              }))
             }),
           )
+          const content = contentParts.flat()
           return { ...chatMessage, content }
         }),
       )
@@ -329,7 +366,10 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
 
       if (!retried && (await isStaleFileResponse(response))) {
         for (const [digest, staleFileID] of transformed.references) {
-          if (leases.get(digest)?.fileID === staleFileID) leases.delete(digest)
+          if (leases.get(digest)?.fileID === staleFileID) {
+            leases.delete(digest)
+            manifests.delete(digest)
+          }
         }
         return dispatch(true)
       }
