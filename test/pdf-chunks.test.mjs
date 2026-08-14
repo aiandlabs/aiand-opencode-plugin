@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import test from "node:test"
 import { PDFDocument } from "pdf-lib"
 import { preparePdfChunks } from "../dist/pdf-chunks.js"
@@ -37,6 +38,27 @@ for (const pageCount of [101, 201]) {
     assert.deepEqual(widths, Array.from({ length: pageCount }, (_, index) => 200 + index))
   })
 }
+
+test("serializes repeated oversized-source chunks identically across a timestamp boundary", async () => {
+  const source = await makePdf(101)
+  const first = await preparePdfChunks(source)
+  const completedSecond = Math.floor(Date.now() / 1000)
+  const nextSecondMs = (completedSecond + 1) * 1000
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextSecondMs - Date.now() + 50)))
+  assert.ok(Date.now() >= nextSecondMs)
+
+  const second = await preparePdfChunks(source)
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex")
+
+  assert.deepEqual(
+    second.map((chunk) => Buffer.from(chunk.bytes)),
+    first.map((chunk) => Buffer.from(chunk.bytes)),
+  )
+  assert.deepEqual(
+    second.map((chunk) => digest(chunk.bytes)),
+    first.map((chunk) => digest(chunk.bytes)),
+  )
+})
 
 test("rejects malformed PDF with a fixed error", async () => {
   await assert.rejects(preparePdfChunks(Buffer.from("%PDF-")), {

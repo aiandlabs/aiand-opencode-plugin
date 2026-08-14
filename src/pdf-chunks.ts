@@ -51,7 +51,7 @@ export async function preparePdfChunks(
     const end = Math.min(start + maxPagesPerChunk, pageCount)
     let chunkBytes: Uint8Array
     try {
-      const chunk = await PDFDocument.create()
+      const chunk = await PDFDocument.create({ updateMetadata: false })
       const pages = await chunk.copyPages(source, Array.from({ length: end - start }, (_, index) => start + index))
       for (const page of pages) chunk.addPage(page)
       chunkBytes = await chunk.save()
