@@ -29,8 +29,14 @@ type ProviderModels = NonNullable<NonNullable<ConfigInput["provider"]>[string]["
 
 type CatalogProvider = { npm?: unknown; models?: unknown }
 
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== "object") return value
+  for (const nested of Object.values(value)) deepFreeze(nested)
+  return Object.freeze(value)
+}
+
 function unavailableCatalogSnapshot(): CatalogSnapshot {
-  return { available: false, fetchedAtMs: Date.now(), models: {} }
+  return deepFreeze({ available: false, fetchedAtMs: Date.now(), models: {} })
 }
 
 // ai&'s public catalog (/v1/api.json) needs no key and is already in OpenCode's
@@ -54,11 +60,15 @@ async function fetchCatalogSnapshot(): Promise<CatalogSnapshot> {
     if (!entry.models || typeof entry.models !== "object" || Array.isArray(entry.models)) {
       return unavailableCatalogSnapshot()
     }
-    return {
+    const models = entry.models as CatalogSnapshot["models"]
+    if (Object.values(models).some((model) => !model || typeof model !== "object" || Array.isArray(model))) {
+      return unavailableCatalogSnapshot()
+    }
+    return deepFreeze({
       available: true,
       fetchedAtMs: Date.now(),
-      models: entry.models as CatalogSnapshot["models"],
-    }
+      models: deepFreeze(models),
+    })
   } catch (err) {
     console.error("[aiand] failed to load model catalog", err)
     return unavailableCatalogSnapshot()
