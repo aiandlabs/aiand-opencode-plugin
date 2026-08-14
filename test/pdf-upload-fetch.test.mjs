@@ -113,6 +113,20 @@ test("uploads an inline PDF and sends only its file_id to chat", async () => {
   assert.equal(chat.init.headers.has("content-length"), false)
 })
 
+test("accepts a large valid PDF without regex size failures", async () => {
+  const largePdf = Buffer.alloc(14 * 1024 * 1024)
+  PDF_BYTES.subarray(0, 5).copy(largePdf)
+  const dataURL = `data:application/pdf;base64,${largePdf.toString("base64")}`
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  const response = await sendPdf(fetch, dataURL)
+
+  assert.equal(response.status, 200)
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 1)
+  assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 1)
+})
+
 test("rejects malformed PDF-shaped parts before any network request", async (t) => {
   const invalid = [
     {

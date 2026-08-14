@@ -30,7 +30,16 @@ const PDF_SIGNATURE = Buffer.from("%PDF-", "ascii")
 const DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024
 const DEFAULT_EXPIRY_SAFETY_MS = 60_000
 const DEFAULT_FILE_TTL_MS = 30 * 24 * 60 * 60 * 1000
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+function isBase64Character(code: number) {
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 43 ||
+    code === 47
+  )
+}
 
 function inlinePdfPart(value: unknown): InlinePdfPart | undefined {
   if (!value || typeof value !== "object") return undefined
@@ -47,7 +56,7 @@ function inlinePdfPart(value: unknown): InlinePdfPart | undefined {
 
 function decodePdf(dataURL: string, maxPdfBytes: number) {
   const encoded = dataURL.slice(PDF_PREFIX.length)
-  if (encoded.length === 0 || encoded.length % 4 !== 0 || !BASE64_PATTERN.test(encoded)) {
+  if (encoded.length === 0 || encoded.length % 4 !== 0) {
     throw new Error("[aiand] PDF validation failed: invalid base64 data")
   }
 
@@ -55,6 +64,18 @@ function decodePdf(dataURL: string, maxPdfBytes: number) {
   const decodedSize = (encoded.length / 4) * 3 - padding
   if (decodedSize > maxPdfBytes) {
     throw new Error(`[aiand] PDF validation failed: decoded file exceeds ${maxPdfBytes} bytes`)
+  }
+
+  const contentLength = encoded.length - padding
+  for (let index = 0; index < contentLength; index += 1) {
+    if (!isBase64Character(encoded.charCodeAt(index))) {
+      throw new Error("[aiand] PDF validation failed: invalid base64 data")
+    }
+  }
+  for (let index = contentLength; index < encoded.length; index += 1) {
+    if (encoded.charCodeAt(index) !== 61) {
+      throw new Error("[aiand] PDF validation failed: invalid base64 data")
+    }
   }
 
   const bytes = Buffer.from(encoded, "base64")
