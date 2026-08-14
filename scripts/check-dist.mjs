@@ -9,13 +9,12 @@
 //      hooks this plugin is built around (`config`, `auth`).
 import assert from "node:assert/strict"
 import { createRequire } from "node:module"
-import { pathToFileURL } from "node:url"
 
 const require = createRequire(import.meta.url)
 const pkg = require("../package.json")
 
 assert.ok(pkg.main, "package.json must declare `main` (OpenCode resolves npm plugins from it)")
-const mod = await import(pathToFileURL(new URL(`../${pkg.main}`, import.meta.url).pathname))
+const mod = await import(new URL(`../${pkg.main}`, import.meta.url))
 
 const exports_ = Object.entries(mod)
 assert.ok(exports_.length > 0, "entry module has no runtime exports")
