@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto"
+import { decidePdfCapability, type CatalogSnapshot } from "./pdf-capability.js"
 
 type Fetch = typeof globalThis.fetch
 
 export type PdfUploadFetchOptions = {
   baseURL: string
+  catalogSnapshot: CatalogSnapshot
+  rejectedModels?: ReadonlySet<string>
   fetchImpl?: Fetch
   now?: () => number
   maxPdfBytes?: number
@@ -52,6 +55,21 @@ function inlinePdfPart(value: unknown): InlinePdfPart | undefined {
     throw new Error("[aiand] PDF validation failed: expected a canonical base64 data URL")
   }
   return value as InlinePdfPart
+}
+
+function containsRecognizedPdf(messages: unknown[]) {
+  return messages.some((message) => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return false
+    const content = (message as { content?: unknown }).content
+    if (!Array.isArray(content)) return false
+    return content.some((part) => {
+      if (!part || typeof part !== "object" || Array.isArray(part)) return false
+      const file = (part as { file?: unknown }).file
+      if (!file || typeof file !== "object" || Array.isArray(file)) return false
+      const fileData = (file as { file_data?: unknown }).file_data
+      return typeof fileData === "string" && fileData.toLowerCase().startsWith(PDF_MIME_PREFIX)
+    })
+  })
 }
 
 function decodePdf(dataURL: string, maxPdfBytes: number) {
@@ -137,6 +155,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
   const maxPdfBytes = options.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES
   const now = options.now ?? Date.now
   const expirySafetyMs = options.expirySafetyMs ?? DEFAULT_EXPIRY_SAFETY_MS
+  const { catalogSnapshot, rejectedModels } = options
   const leases = new Map<string, FileLease>()
   const uploads = new Map<string, Promise<FileLease>>()
 
@@ -232,9 +251,18 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
     if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
       return fetchImpl(input, init)
     }
-    const body = parsedBody as { messages?: unknown }
+    const body = parsedBody as { model?: unknown; messages?: unknown }
     if (!Array.isArray(body.messages)) return fetchImpl(input, init)
     const bodyMessages = body.messages
+    if (!containsRecognizedPdf(bodyMessages)) return fetchImpl(input, init)
+
+    const capability = decidePdfCapability(body.model, catalogSnapshot, rejectedModels)
+    if (capability.state === "unsupported") {
+      throw new Error("[aiand] PDF capability failed: selected model does not support PDF input")
+    }
+    if (capability.state === "unknown") {
+      throw new Error("[aiand] PDF capability failed: selected model capability is unavailable")
+    }
 
     const requestHeaders = new Headers(effectiveRequest.headers)
 

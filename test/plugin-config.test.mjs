@@ -15,6 +15,7 @@ test("registers the PDF upload fetch on the Aiand provider", async () => {
           models: {
             "moonshotai/kimi-k3": {
               name: "Kimi K3",
+              attachment: true,
               modalities: { input: ["text", "image", "pdf"], output: ["text"] },
             },
           },
@@ -33,8 +34,30 @@ test("registers the PDF upload fetch on the Aiand provider", async () => {
     assert.equal(cfg.provider.aiand.api, "https://api.aiand.com/v1")
     assert.equal(cfg.provider.aiand.options.baseURL, "https://api.aiand.com/v1")
     assert.equal(typeof cfg.provider.aiand.options.fetch, "function")
-    assert.ok(cfg.provider.aiand.models["moonshotai/kimi-k3"])
+    assert.deepEqual(cfg.provider.aiand.models["moonshotai/kimi-k3"].modalities.input, ["text", "image", "pdf"])
+    assert.equal(cfg.provider.aiand.models["moonshotai/kimi-k3"].attachment, true)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test("registers text-only config when the model catalog is unavailable", async () => {
+  const originalFetch = globalThis.fetch
+  const originalConsoleError = console.error
+  globalThis.fetch = async () => {
+    throw new Error("catalog unavailable")
+  }
+  console.error = () => {}
+
+  try {
+    const hooks = await AiandPlugin({})
+    const cfg = {}
+    await hooks.config(cfg)
+
+    assert.deepEqual(cfg.provider.aiand.models, {})
+    assert.equal(typeof cfg.provider.aiand.options.fetch, "function")
+  } finally {
+    globalThis.fetch = originalFetch
+    console.error = originalConsoleError
   }
 })

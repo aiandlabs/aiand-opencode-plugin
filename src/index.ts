@@ -1,4 +1,5 @@
 import type { Plugin, Hooks } from "@opencode-ai/plugin"
+import type { CatalogSnapshot } from "./pdf-capability.js"
 import { createPdfUploadFetch } from "./pdf-upload-fetch.js"
 
 /**
@@ -26,27 +27,41 @@ const baseURL = (process.env.AIAND_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/,
 type ConfigInput = Parameters<NonNullable<Hooks["config"]>>[0]
 type ProviderModels = NonNullable<NonNullable<ConfigInput["provider"]>[string]["models"]>
 
-type CatalogProvider = { npm?: string; models?: ProviderModels }
+type CatalogProvider = { npm?: unknown; models?: unknown }
+
+function unavailableCatalogSnapshot(): CatalogSnapshot {
+  return { available: false, fetchedAtMs: Date.now(), models: {} }
+}
 
 // ai&'s public catalog (/v1/api.json) needs no key and is already in OpenCode's
 // models.dev shape. It holds a single provider entry whose `.models` map is
 // what we want.
-async function fetchCatalogModels(): Promise<ProviderModels> {
+async function fetchCatalogSnapshot(): Promise<CatalogSnapshot> {
   try {
     // Bound the request so a hung gateway can't stall OpenCode startup.
     const res = await fetch(`${baseURL}/api.json`, { signal: AbortSignal.timeout(5000) })
     if (!res.ok) {
       console.error(`[aiand] model catalog fetch failed: ${res.status} ${res.statusText}`)
-      return {}
+      return unavailableCatalogSnapshot()
     }
-    const catalog = (await res.json()) as Record<string, CatalogProvider>
+    const catalog = (await res.json()) as unknown
+    if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) return unavailableCatalogSnapshot()
     // The catalog keys its single entry under "opencode"; fall back to the
     // first entry if that ever changes.
-    const entry = catalog["opencode"] ?? Object.values(catalog)[0]
-    return entry?.models ?? {}
+    const entries = catalog as Record<string, CatalogProvider>
+    const entry = entries["opencode"] ?? Object.values(entries)[0]
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return unavailableCatalogSnapshot()
+    if (!entry.models || typeof entry.models !== "object" || Array.isArray(entry.models)) {
+      return unavailableCatalogSnapshot()
+    }
+    return {
+      available: true,
+      fetchedAtMs: Date.now(),
+      models: entry.models as CatalogSnapshot["models"],
+    }
   } catch (err) {
     console.error("[aiand] failed to load model catalog", err)
-    return {}
+    return unavailableCatalogSnapshot()
   }
 }
 
@@ -55,8 +70,8 @@ export const AiandPlugin: Plugin = async () => {
   // config() hooks run, and a *new* provider's models must be declared inline
   // (the provider.models() hook only augments providers already known to
   // models.dev) — so we inject the live models straight into config below.
-  const models = await fetchCatalogModels()
-  const pdfUploadFetch = createPdfUploadFetch({ baseURL })
+  const catalogSnapshot = await fetchCatalogSnapshot()
+  const pdfUploadFetch = createPdfUploadFetch({ baseURL, catalogSnapshot })
 
   return {
     // Register the ai& provider (OpenAI-compatible), pointed at the gateway,
@@ -77,7 +92,7 @@ export const AiandPlugin: Plugin = async () => {
           apiKey: process.env.AIAND_API_KEY,
           fetch: pdfUploadFetch,
         },
-        models,
+        models: catalogSnapshot.models as ProviderModels,
       }
     },
 

@@ -7,6 +7,20 @@ const BASE_URL = "https://api.aiand.com/v1"
 const CHAT_URL = `${BASE_URL}/chat/completions`
 const PDF_BYTES = Buffer.from("%PDF-1.4\nPDF smoke test\n%%EOF\n", "utf8")
 const PDF_DATA_URL = `data:application/pdf;base64,${PDF_BYTES.toString("base64")}`
+const SUPPORTED_CATALOG = {
+  available: true,
+  fetchedAtMs: 1_786_660_000_000,
+  models: {
+    "moonshotai/kimi-k3": {
+      attachment: true,
+      modalities: { input: ["text", "image", "pdf"] },
+    },
+  },
+}
+
+function createTestPdfUploadFetch(options) {
+  return createPdfUploadFetch({ catalogSnapshot: SUPPORTED_CATALOG, ...options })
+}
 
 function chatBody(parts) {
   return {
@@ -64,7 +78,7 @@ function sendPdf(fetch, dataURL = PDF_DATA_URL) {
 
 test("uploads an inline PDF and sends only its file_id to chat", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => 1786660000 * 1000,
@@ -118,7 +132,7 @@ test("accepts a large valid PDF without regex size failures", async () => {
   PDF_BYTES.subarray(0, 5).copy(largePdf)
   const dataURL = `data:application/pdf;base64,${largePdf.toString("base64")}`
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   const response = await sendPdf(fetch, dataURL)
 
@@ -129,7 +143,7 @@ test("accepts a large valid PDF without regex size failures", async () => {
 
 test("translates an inline PDF carried by a Request input", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
   const request = new Request(CHAT_URL, {
     method: "POST",
     headers: { authorization: "Bearer request-key", "content-type": "application/json" },
@@ -147,7 +161,7 @@ test("translates an inline PDF carried by a Request input", async () => {
 
 test("applies init overrides when translating a Request input", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
   const request = new Request(CHAT_URL, {
     headers: { authorization: "Bearer old-key", "x-original": "discarded" },
   })
@@ -188,7 +202,7 @@ test("rejects malformed PDF-shaped parts before any network request", async (t) 
   for (const item of invalid) {
     await t.test(item.name, async () => {
       const aiand = recordingAiand()
-      const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl, ...item.options })
+      const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl, ...item.options })
       const body = chatBody([{ type: "file", file: { filename: "unsafe.pdf", file_data: item.data } }])
 
       await assert.rejects(
@@ -204,9 +218,78 @@ test("rejects malformed PDF-shaped parts before any network request", async (t) 
   }
 })
 
+test("rejects a malformed PDF before validation when the selected model is known not to support PDF", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    catalogSnapshot: {
+      available: true,
+      fetchedAtMs: 1_786_660_000_000,
+      models: {
+        "moonshotai/kimi-k3": {
+          attachment: true,
+          modalities: { input: ["text"] },
+        },
+      },
+    },
+  })
+
+  await assert.rejects(sendPdf(fetch, "data:application/pdf;base64,%%%%"), {
+    message: "[aiand] PDF capability failed: selected model does not support PDF input",
+  })
+  assert.equal(aiand.calls.length, 0)
+})
+
+test("rejects a malformed PDF before validation when the selected model is absent from the catalog", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    catalogSnapshot: { available: true, fetchedAtMs: 1_786_660_000_000, models: {} },
+  })
+
+  await assert.rejects(sendPdf(fetch, "data:application/pdf;base64,%%%%"), {
+    message: "[aiand] PDF capability failed: selected model capability is unavailable",
+  })
+  assert.equal(aiand.calls.length, 0)
+})
+
+test("validates malformed PDFs after authorizing a supported model", async () => {
+  const aiand = recordingAiand()
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(sendPdf(fetch, "data:application/pdf;base64,%%%%"), {
+    message: "[aiand] PDF validation failed: invalid base64 data",
+  })
+  assert.equal(aiand.calls.length, 0)
+})
+
+test("passes through non-PDF chat requests when the catalog is unavailable", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    catalogSnapshot: { available: false, fetchedAtMs: 1_786_660_000_000, models: {} },
+  })
+  const body = chatBody([{ type: "text", text: "hello" }])
+  const init = {
+    method: "POST",
+    headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }
+
+  const response = await fetch(CHAT_URL, init)
+
+  assert.equal(response.status, 200)
+  assert.equal(aiand.calls.length, 1)
+  assert.equal(aiand.calls[0].url, CHAT_URL)
+  assert.equal(aiand.calls[0].init, init)
+})
+
 test("preserves requests without an eligible inline PDF", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
   const body = {
     ...chatBody([
       { type: "text", text: "hello" },
@@ -233,7 +316,7 @@ test("preserves requests without an eligible inline PDF", async () => {
 
 test("preserves unrelated fields and headers while rewriting a PDF", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
   const body = {
     ...chatBody([
       { type: "text", text: "hello" },
@@ -266,7 +349,7 @@ test("passes through malformed or unexpected chat bodies unchanged", async (t) =
   for (const serialized of ["not-json", "null", "[]", '{"messages":{}}']) {
     await t.test(serialized, async () => {
       const aiand = recordingAiand()
-      const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+      const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
       const init = {
         method: "POST",
         headers: { authorization: "Bearer test-key", "content-type": "application/json" },
@@ -287,7 +370,7 @@ test("turns an invalid upload response into a safe adapter error", async () => {
   const aiand = recordingAiand({
     uploadResponse: () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } }),
   })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(
     fetch(CHAT_URL, {
@@ -308,7 +391,7 @@ test("wraps upload transport failures without exposing transport details", async
       throw new Error("connect to secret.internal.example failed")
     },
   })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(sendPdf(fetch), {
     message: "[aiand] PDF upload failed: network request failed",
@@ -317,7 +400,7 @@ test("wraps upload transport failures without exposing transport details", async
 
 test("rejects a null upload response with a staged adapter error", async () => {
   const aiand = recordingAiand({ uploadResponse: () => jsonResponse(null) })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(sendPdf(fetch), {
     message: "[aiand] PDF upload response failed: expected an object",
@@ -326,7 +409,7 @@ test("rejects a null upload response with a staged adapter error", async () => {
 
 test("rejects a blank upload file id", async () => {
   const aiand = recordingAiand({ uploadResponse: () => jsonResponse({ id: "   " }) })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(sendPdf(fetch), {
     message: "[aiand] PDF upload response failed: missing file id",
@@ -341,7 +424,7 @@ test("redacts arbitrary provider messages from upload errors", async () => {
         { status: 400 },
       ),
   })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(sendPdf(fetch), {
     message: "[aiand] PDF upload failed: HTTP 400 (invalid_request_error)",
@@ -350,7 +433,7 @@ test("redacts arbitrary provider messages from upload errors", async () => {
 
 test("reuses one upload for sequential references to identical PDF bytes", async () => {
   const aiand = recordingAiand()
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => 1786660000 * 1000,
@@ -374,7 +457,7 @@ test("shares an in-flight upload between concurrent references to identical PDF 
       return jsonResponse({ id: "file-shared", expires_at: 1786665600 })
     },
   })
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => 1786660000 * 1000,
@@ -394,7 +477,7 @@ test("uploads distinct PDF bytes separately", async () => {
   const aiand = recordingAiand({
     uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: 1786665600 }),
   })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
   const other = Buffer.from("%PDF-1.4\na different document\n%%EOF\n").toString("base64")
 
   await sendPdf(fetch)
@@ -418,7 +501,7 @@ test("does not cache failed uploads", async () => {
           )
         : jsonResponse({ id: "file-recovered", expires_at: 1786665600 }),
   })
-  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const fetch = createTestPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
   await assert.rejects(
     sendPdf(fetch),
@@ -435,7 +518,7 @@ test("re-uploads after the cached file lease expires", async () => {
   const aiand = recordingAiand({
     uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: 1_786_660_100 }),
   })
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => now,
@@ -459,7 +542,7 @@ test("uses the fallback lease for an unsafe returned expiry", async () => {
   const aiand = recordingAiand({
     uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: Number.MAX_VALUE }),
   })
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => now,
@@ -489,7 +572,7 @@ test("refreshes a stale file reference and retries chat once", async (t) => {
                 headers: { "content-type": "text/event-stream" },
               }),
       })
-      const fetch = createPdfUploadFetch({
+      const fetch = createTestPdfUploadFetch({
         baseURL: BASE_URL,
         fetchImpl: aiand.fetchImpl,
         now: () => 1_786_660_000_000,
@@ -529,7 +612,7 @@ test("shares one refresh when concurrent requests discover the same stale refere
       })
     },
   })
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => 1_786_660_000_000,
@@ -562,7 +645,7 @@ test("does not retry unrelated chat errors", async (t) => {
   for (const [index, error] of errors.entries()) {
     await t.test(`control ${index + 1}`, async () => {
       const aiand = recordingAiand({ chatResponse: () => error.clone() })
-      const fetch = createPdfUploadFetch({
+      const fetch = createTestPdfUploadFetch({
         baseURL: BASE_URL,
         fetchImpl: aiand.fetchImpl,
         now: () => 1_786_660_000_000,
@@ -582,7 +665,7 @@ test("limits stale-reference recovery to one chat retry", async () => {
     uploadResponse: (count) => jsonResponse({ id: `file-${count}`, expires_at: 1_786_665_600 }),
     chatResponse: () => jsonResponse({ error: { code: "file_expired" } }, { status: 410 }),
   })
-  const fetch = createPdfUploadFetch({
+  const fetch = createTestPdfUploadFetch({
     baseURL: BASE_URL,
     fetchImpl: aiand.fetchImpl,
     now: () => 1_786_660_000_000,
