@@ -911,6 +911,85 @@ test("keeps a refreshed chunk manifest when a delayed stale response used its ol
   )
 })
 
+test("does not publish a captured shared lease after another source invalidates it", async () => {
+  const sourceABytes = await createPdfBytes(1, [73, 73])
+  const sourceBBytes = await createPdfBytes(1, [74, 74])
+  const sharedChunkBytes = await createPdfBytes(1, [75, 75])
+  const laterChunkBytes = await createPdfBytes(1, [76, 76])
+  const sourceA = `data:application/pdf;base64,${sourceABytes.toString("base64")}`
+  const sourceB = `data:application/pdf;base64,${sourceBBytes.toString("base64")}`
+  let markLaterUploadStarted
+  const laterUploadStarted = new Promise((resolve) => {
+    markLaterUploadStarted = resolve
+  })
+  let releaseLaterUpload
+  const laterUploadReleased = new Promise((resolve) => {
+    releaseLaterUpload = resolve
+  })
+  const aiand = recordingAiand({
+    uploadResponse: async (count) => {
+      if (count === 2) {
+        markLaterUploadStarted()
+        await laterUploadReleased
+      }
+      return jsonResponse({ id: `file-${count}`, expires_at: 1_786_665_600 })
+    },
+    chatResponse: (count) =>
+      count === 2
+        ? jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+        : new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+  })
+  const fetch = createTestPdfUploadFetch(
+    {
+      baseURL: BASE_URL,
+      fetchImpl: aiand.fetchImpl,
+      now: () => 1_786_660_000_000,
+    },
+    {
+      preparePdfChunks: async (bytes) => {
+        if (Buffer.from(bytes).equals(sourceABytes)) {
+          return [
+            { bytes: sharedChunkBytes, firstPage: 1, lastPage: 1 },
+            { bytes: laterChunkBytes, firstPage: 2, lastPage: 2 },
+          ]
+        }
+        if (Buffer.from(bytes).equals(sourceBBytes)) {
+          return [{ bytes: sharedChunkBytes, firstPage: 1, lastPage: 1 }]
+        }
+        throw new Error("unexpected source fixture")
+      },
+    },
+  )
+
+  const seedResponse = await sendPdf(fetch, sourceB)
+  const pendingSourceA = sendPdf(fetch, sourceA)
+  await laterUploadStarted
+  const refreshedSourceB = await sendPdf(fetch, sourceB)
+  releaseLaterUpload()
+  const firstSourceA = await pendingSourceA
+  const secondSourceA = await sendPdf(fetch, sourceA)
+
+  assert.deepEqual(
+    [seedResponse.status, refreshedSourceB.status, firstSourceA.status, secondSourceA.status],
+    [200, 200, 200, 200],
+  )
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 3)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content.map((part) => part.file.file_id)),
+    [
+      ["file-1"],
+      ["file-1"],
+      ["file-3"],
+      ["file-3", "file-2"],
+      ["file-3", "file-2"],
+    ],
+  )
+})
+
 test("shares one refresh when concurrent requests discover the same stale reference", async () => {
   let markRefreshed
   const refreshed = new Promise((resolve) => {

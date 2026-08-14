@@ -249,14 +249,32 @@ export function createPdfUploadFetch(
 
     const preparation = (async () => {
       const chunks = await dependencies.preparePdfChunks(bytes)
-      const next: FileLease[] = []
+      const prepared: Array<{ bytes: Buffer; digest: string; lease: FileLease }> = []
       for (const chunk of chunks) {
         const chunkBytes = Buffer.from(chunk.bytes)
         const chunkDigest = createHash("sha256").update(chunkBytes).digest("hex")
-        next.push(await resolveLease(chunkBytes, chunkDigest, headers))
+        prepared.push({
+          bytes: chunkBytes,
+          digest: chunkDigest,
+          lease: await resolveLease(chunkBytes, chunkDigest, headers),
+        })
       }
-      manifests.set(sourceDigest, next)
-      return next
+
+      while (true) {
+        let mismatch: (typeof prepared)[number] | undefined
+        for (const chosen of prepared) {
+          if (leases.get(chosen.digest) !== chosen.lease) {
+            mismatch = chosen
+            break
+          }
+        }
+        if (!mismatch) {
+          const next = prepared.map((chosen) => chosen.lease)
+          manifests.set(sourceDigest, next)
+          return next
+        }
+        mismatch.lease = await resolveLease(mismatch.bytes, mismatch.digest, headers)
+      }
     })()
     preparations.set(sourceDigest, preparation)
     try {
