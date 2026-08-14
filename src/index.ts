@@ -1,4 +1,5 @@
 import type { Plugin, Hooks } from "@opencode-ai/plugin"
+import { createPdfUploadFetch } from "./pdf-upload-fetch.js"
 
 /**
  * ai& provider for OpenCode.
@@ -55,6 +56,7 @@ export const AiandPlugin: Plugin = async () => {
   // (the provider.models() hook only augments providers already known to
   // models.dev) — so we inject the live models straight into config below.
   const models = await fetchCatalogModels()
+  const pdfUploadFetch = createPdfUploadFetch({ baseURL })
 
   return {
     // Register the ai& provider (OpenAI-compatible), pointed at the gateway,
@@ -73,6 +75,7 @@ export const AiandPlugin: Plugin = async () => {
           // Used when AIAND_API_KEY is set; an interactive `auth login` key
           // overrides this at request time via the auth loader below.
           apiKey: process.env.AIAND_API_KEY,
+          fetch: pdfUploadFetch,
         },
         models,
       }
