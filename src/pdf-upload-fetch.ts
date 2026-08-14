@@ -163,7 +163,8 @@ export function createPdfUploadFetch(
   const maxPdfBytes = options.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES
   const now = options.now ?? Date.now
   const expirySafetyMs = options.expirySafetyMs ?? DEFAULT_EXPIRY_SAFETY_MS
-  const { catalogSnapshot, rejectedModels } = options
+  const { catalogSnapshot } = options
+  const rejectedModels = new Set(options.rejectedModels)
   const leases = new Map<string, FileLease>()
   const uploads = new Map<string, Promise<FileLease>>()
   const manifests = new Map<string, FileLease[]>()
@@ -306,11 +307,12 @@ export function createPdfUploadFetch(
     if (capability.state === "unknown") {
       throw new Error("[aiand] PDF capability failed: selected model capability is unavailable")
     }
+    const modelID = body.model as string
 
     const requestHeaders = new Headers(effectiveRequest.headers)
 
     async function transformedBody() {
-      const references = new Map<string, string>()
+      const usedFileIDs = new Set<string>()
       let transformed = false
       const messages = await Promise.all(
         bodyMessages.map(async (message) => {
@@ -328,7 +330,7 @@ export function createPdfUploadFetch(
               uploadHeaders.delete("content-length")
               const documentLeases = await resolveDocument(bytes, digest, uploadHeaders)
 
-              if (documentLeases.length === 1) references.set(digest, documentLeases[0].fileID)
+              for (const lease of documentLeases) usedFileIDs.add(lease.fileID)
               transformed = true
               return documentLeases.map((lease) => ({
                 ...pdf,
@@ -341,8 +343,9 @@ export function createPdfUploadFetch(
         }),
       )
       return {
-        references,
+        modelID,
         transformed,
+        usedFileIDs,
         serialized: JSON.stringify({ ...body, messages }),
       }
     }
@@ -360,6 +363,16 @@ export function createPdfUploadFetch(
       }
     }
 
+    async function isModelCapabilityMismatchResponse(response: Response) {
+      if (response.status !== 400) return false
+      try {
+        const payload = (await response.clone().json()) as { error?: { code?: unknown } }
+        return payload.error?.code === "model_capability_mismatch"
+      } catch {
+        return false
+      }
+    }
+
     async function dispatch(retried: boolean): Promise<Response> {
       const transformed = await transformedBody()
       if (!transformed.transformed) return fetchImpl(input, init)
@@ -372,13 +385,18 @@ export function createPdfUploadFetch(
       })
 
       if (!retried && (await isStaleFileResponse(response))) {
-        for (const [digest, staleFileID] of transformed.references) {
-          if (leases.get(digest)?.fileID === staleFileID) {
-            leases.delete(digest)
-            manifests.delete(digest)
+        for (const [digest, lease] of leases) {
+          if (transformed.usedFileIDs.has(lease.fileID)) leases.delete(digest)
+        }
+        for (const [sourceDigest, manifest] of manifests) {
+          if (manifest.some((lease) => transformed.usedFileIDs.has(lease.fileID))) {
+            manifests.delete(sourceDigest)
           }
         }
         return dispatch(true)
+      }
+      if (await isModelCapabilityMismatchResponse(response)) {
+        rejectedModels.add(transformed.modelID)
       }
       return response
     }

@@ -24,9 +24,9 @@ function createTestPdfUploadFetch(options, dependencies) {
   return createPdfUploadFetch({ catalogSnapshot: SUPPORTED_CATALOG, ...options }, dependencies)
 }
 
-function chatBody(parts) {
+function chatBody(parts, model = "moonshotai/kimi-k3") {
   return {
-    model: "moonshotai/kimi-k3",
+    model,
     stream: true,
     messages: [{ role: "user", content: parts }],
   }
@@ -70,11 +70,11 @@ function recordingAiand(options = {}) {
   return { calls, fetchImpl }
 }
 
-function sendPdf(fetch, dataURL = PDF_DATA_URL) {
+function sendPdf(fetch, dataURL = PDF_DATA_URL, model) {
   return fetch(CHAT_URL, {
     method: "POST",
     headers: { authorization: "Bearer test-key", "content-type": "application/json" },
-    body: JSON.stringify(chatBody([{ type: "file", file: { filename: "manual.pdf", file_data: dataURL } }])),
+    body: JSON.stringify(chatBody([{ type: "file", file: { filename: "manual.pdf", file_data: dataURL } }], model)),
   })
 }
 
@@ -832,6 +832,85 @@ test("refreshes a stale file reference and retries chat once", async (t) => {
   }
 })
 
+test("invalidates every stale chunk in a manifest and retries with refreshed ordered IDs", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: (count) => jsonResponse({ id: `file-chunk-${count}`, expires_at: 1_786_665_600 }),
+    chatResponse: (count) =>
+      count === 1
+        ? jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+        : new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1_786_660_000_000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  const response = await sendPdf(fetch, dataURL)
+
+  assert.equal(response.status, 200)
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 4)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.equal(chats.length, 2)
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content.map((part) => part.file.file_id)),
+    [
+      ["file-chunk-1", "file-chunk-2"],
+      ["file-chunk-3", "file-chunk-4"],
+    ],
+  )
+})
+
+test("keeps a refreshed chunk manifest when a delayed stale response used its old IDs", async () => {
+  let markRefreshedChat
+  const refreshedChat = new Promise((resolve) => {
+    markRefreshedChat = resolve
+  })
+  const aiand = recordingAiand({
+    uploadResponse: (count) => jsonResponse({ id: `file-chunk-${count}`, expires_at: 1_786_665_600 }),
+    chatResponse: async (count) => {
+      if (count === 1) return jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+      if (count === 2) {
+        await refreshedChat
+        return jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+      }
+      if (count === 3) markRefreshedChat()
+      return new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    },
+  })
+  const fetch = createTestPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1_786_660_000_000,
+  })
+  const dataURL = await pdfDataURL(101)
+
+  const responses = await Promise.all([sendPdf(fetch, dataURL), sendPdf(fetch, dataURL)])
+
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200],
+  )
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 4)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content.map((part) => part.file.file_id)),
+    [
+      ["file-chunk-1", "file-chunk-2"],
+      ["file-chunk-1", "file-chunk-2"],
+      ["file-chunk-3", "file-chunk-4"],
+      ["file-chunk-3", "file-chunk-4"],
+    ],
+  )
+})
+
 test("shares one refresh when concurrent requests discover the same stale reference", async () => {
   let markRefreshed
   const refreshed = new Promise((resolve) => {
@@ -918,4 +997,89 @@ test("limits stale-reference recovery to one chat retry", async () => {
   assert.equal(response.status, 410)
   assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
   assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 2)
+})
+
+test("passively rejects only the exact model after a capability mismatch without retrying or evicting", async () => {
+  const otherModelID = "provider/other-pdf-model"
+  const mismatch = jsonResponse(
+    { error: { code: "model_capability_mismatch", message: "runtime catalog drift" } },
+    { status: 400 },
+  )
+  const aiand = recordingAiand({
+    chatResponse: (count) =>
+      count === 1
+        ? mismatch
+        : new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+  })
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    catalogSnapshot: {
+      ...SUPPORTED_CATALOG,
+      models: {
+        ...SUPPORTED_CATALOG.models,
+        [otherModelID]: {
+          attachment: true,
+          modalities: { input: ["text", "image", "pdf"] },
+        },
+      },
+    },
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1_786_660_000_000,
+  })
+
+  const response = await sendPdf(fetch)
+
+  assert.strictEqual(response, mismatch)
+  assert.deepEqual(await response.json(), {
+    error: { code: "model_capability_mismatch", message: "runtime catalog drift" },
+  })
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 1)
+  assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 1)
+
+  await assert.rejects(sendPdf(fetch), {
+    message: "[aiand] PDF capability failed: selected model does not support PDF input",
+  })
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 1)
+  assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 1)
+
+  const otherResponse = await sendPdf(fetch, PDF_DATA_URL, otherModelID)
+  assert.equal(otherResponse.status, 200)
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 1)
+  assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 2)
+})
+
+test("does not reject a model for other capability response status and code pairs", async (t) => {
+  for (const control of [
+    { code: "model_capability_mismatch", status: 500 },
+    { code: "invalid_request_error", status: 400 },
+  ]) {
+    await t.test(`${control.status}/${control.code}`, async () => {
+      const controlResponse = jsonResponse({ error: { code: control.code } }, { status: control.status })
+      const aiand = recordingAiand({
+        chatResponse: (count) =>
+          count === 1
+            ? controlResponse
+            : new Response("data: [DONE]\n\n", {
+                status: 200,
+                headers: { "content-type": "text/event-stream" },
+              }),
+      })
+      const fetch = createTestPdfUploadFetch({
+        baseURL: BASE_URL,
+        fetchImpl: aiand.fetchImpl,
+        now: () => 1_786_660_000_000,
+      })
+
+      const firstResponse = await sendPdf(fetch)
+      const secondResponse = await sendPdf(fetch)
+
+      assert.strictEqual(firstResponse, controlResponse)
+      assert.equal(secondResponse.status, 200)
+      assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 1)
+      assert.equal(aiand.calls.filter((call) => call.url === CHAT_URL).length, 2)
+    })
+  }
 })
