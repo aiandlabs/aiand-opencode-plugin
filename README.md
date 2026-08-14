@@ -10,6 +10,8 @@ An **ai&** provider in OpenCode that:
 2. **Logs in cleanly** — `opencode auth login` → **ai&** → paste your `sk-...` key.
 3. **Lists the live catalog** — the model picker is populated straight from ai&'s public
    `/v1/api.json`, so new models show up without touching the plugin.
+4. **Reads PDF attachments** — OpenCode PDFs are uploaded through ai&'s Files API and
+   transparently replaced with the `file_id` shape required by chat completions.
 
 Requires [OpenCode](https://opencode.ai) (`curl -fsSL https://opencode.ai/install | bash`).
 
@@ -56,6 +58,25 @@ opencode run "say hi in one word"   # one-shot
 The model picker and catalog populate **without** a key (`/v1/api.json` is public); a key is
 only needed to actually send a message. Get one at [aiand.com](https://aiand.com).
 
+## PDF attachments
+
+Attach or read PDFs exactly as you would with any other OpenCode provider. No additional
+configuration or prompt changes are required:
+
+```bash
+opencode run "Summarize this document" --file manual.pdf
+```
+
+OpenCode's OpenAI-compatible adapter represents PDFs as inline base64 data. The ai& gateway
+requires a Files API upload followed by a `file_id` reference, so this plugin performs that
+translation before chat dispatch. Byte-identical PDFs share one upload within an OpenCode
+process, including concurrent title and agent requests.
+
+The process-local cache retains only a SHA-256 content key, the ai& file ID, and its expiry;
+it does not retain PDF bytes or filenames after an upload settles. The cache is not persisted
+across OpenCode restarts. Uploaded documents follow ai&'s server-side retention policy (30 days
+by default) and are subject to ai&'s current document limits: 100 MB and 100 pages per PDF.
+
 ## Web search
 
 OpenCode ships a built-in web search tool (via [Exa](https://exa.ai) — free, no API key), but for
@@ -79,7 +100,7 @@ The plugin uses two OpenCode hooks:
 
 | Hook | What it does |
 |---|---|
-| `config` | fetches ai&'s public `/v1/api.json` and registers the `aiand` provider (`@ai-sdk/openai-compatible`, `baseURL`) **with the live model list injected inline** |
+| `config` | fetches ai&'s public `/v1/api.json`, registers the `aiand` provider (`@ai-sdk/openai-compatible`, `baseURL`) **with the live model list injected inline**, and installs the PDF upload transport |
 | `auth` | adds the "ai& API Key" login method; injects the stored key as `Bearer` |
 
 > Why inline models (not the `provider.models()` hook)? OpenCode only runs `provider.models()`
