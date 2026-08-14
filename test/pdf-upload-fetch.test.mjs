@@ -267,12 +267,18 @@ test("does not cache failed uploads", async () => {
   const aiand = recordingAiand({
     uploadResponse: (count) =>
       count === 1
-        ? jsonResponse({ error: { code: "server_error" } }, { status: 500 })
+        ? jsonResponse(
+            { error: { code: "invalid_request_error", message: "PDFs are capped at 100 pages" } },
+            { status: 400 },
+          )
         : jsonResponse({ id: "file-recovered", expires_at: 1786665600 }),
   })
   const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
 
-  await assert.rejects(sendPdf(fetch), /\[aiand\] PDF upload failed: HTTP 500/)
+  await assert.rejects(
+    sendPdf(fetch),
+    /\[aiand\] PDF upload failed: HTTP 400 \(invalid_request_error: PDFs are capped at 100 pages\)/,
+  )
   const response = await sendPdf(fetch)
 
   assert.equal(response.status, 200)

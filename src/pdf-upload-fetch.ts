@@ -89,6 +89,32 @@ function decodePdf(dataURL: string, maxPdfBytes: number) {
   }
 }
 
+function safeErrorField(value: unknown) {
+  if (typeof value !== "string") return undefined
+  const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim()
+  return sanitized.length > 0 ? sanitized.slice(0, 240) : undefined
+}
+
+async function uploadError(response: Response) {
+  let detail: string | undefined
+  try {
+    const payload = (await response.json()) as { error?: { code?: unknown; message?: unknown } | unknown }
+    if (payload.error && typeof payload.error === "object") {
+      const error = payload.error as { code?: unknown; message?: unknown }
+      const code = safeErrorField(error.code)
+      const message = safeErrorField(error.message)
+      detail = code && message ? `${code}: ${message}` : code ?? message
+    } else {
+      detail = safeErrorField(payload.error)
+    }
+  } catch {
+    // Keep non-JSON provider responses out of user-facing errors.
+  }
+
+  const suffix = detail ? ` (${detail})` : ""
+  return new Error(`[aiand] PDF upload failed: HTTP ${response.status}${suffix}`)
+}
+
 export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
   const baseURL = options.baseURL.replace(/\/+$/, "")
   const chatURL = `${baseURL}/chat/completions`
@@ -115,7 +141,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
       body: form,
       redirect: "error",
     })
-    if (!response.ok) throw new Error(`[aiand] PDF upload failed: HTTP ${response.status}`)
+    if (!response.ok) throw await uploadError(response)
 
     let uploaded: { id?: unknown; expires_at?: unknown }
     try {
