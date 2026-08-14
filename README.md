@@ -69,13 +69,26 @@ opencode run "Summarize this document" --file manual.pdf
 
 OpenCode's OpenAI-compatible adapter represents PDFs as inline base64 data. The ai& gateway
 requires a Files API upload followed by a `file_id` reference, so this plugin performs that
-translation before chat dispatch. Byte-identical PDFs share one upload within an OpenCode
-process, including concurrent title and agent requests.
+translation before chat dispatch. The adapter authorizes this work only when the exact selected
+model has positive evidence in ai&'s live catalog: `attachment: true` and PDF listed as an input
+modality. It does not claim PDF support for every ai& model. Text-only, unknown, or otherwise
+unverified models fail before PDF decoding or any upload, rather than sending a retained document
+and waiting for the gateway to decide.
+
+PDFs of 1–100 pages follow the unchanged byte path: the original bytes are uploaded as one file.
+For PDFs above 100 pages, the plugin automatically creates ordered, consecutive uploads of no more
+than 100 pages each (for example, pages 1–100 and 101–200), then sends their multiple `file_id`
+references in the same chat request. The source PDF and every emitted chunk must each be at most
+100 MiB. This handles ai&'s per-file limits; the selected model remains responsible for whether
+the aggregate pages and document context fit in its own limits.
+
+Byte-identical PDFs share their ordered upload result within an OpenCode process, including
+concurrent title and agent requests.
 
 The process-local cache retains only a SHA-256 content key, the ai& file ID, and its expiry;
 it does not retain PDF bytes or filenames after an upload settles. The cache is not persisted
 across OpenCode restarts. Uploaded documents follow ai&'s server-side retention policy (30 days
-by default) and are subject to ai&'s current document limits: 100 MB and 100 pages per PDF.
+by default); this behavior is unchanged.
 
 ## Web search
 
