@@ -23,12 +23,13 @@ function jsonResponse(body, init = {}) {
   })
 }
 
-function recordingAiand() {
+function recordingAiand(options = {}) {
   const calls = []
   const fetchImpl = async (input, init = {}) => {
     const url = input instanceof Request ? input.url : String(input)
     calls.push({ url, init })
     if (url === `${BASE_URL}/files`) {
+      if (options.uploadResponse) return options.uploadResponse(calls.length)
       return jsonResponse({
         id: "file-test-1",
         object: "file",
@@ -40,6 +41,7 @@ function recordingAiand() {
         page_count: 1,
       })
     }
+    if (options.chatResponse) return options.chatResponse(calls.length)
     return new Response("data: [DONE]\n\n", {
       status: 200,
       headers: { "content-type": "text/event-stream" },
@@ -85,7 +87,9 @@ test("uploads an inline PDF and sends only its file_id to chat", async () => {
   assert.equal(upload.init.headers.has("content-type"), false)
   assert.equal(upload.init.headers.has("content-length"), false)
   assert.equal(upload.init.body.get("purpose"), "document")
-  assert.equal(await upload.init.body.get("file").text(), PDF_BYTES.toString("utf8"))
+  const uploadedFile = upload.init.body.get("file")
+  assert.equal(await uploadedFile.text(), PDF_BYTES.toString("utf8"))
+  assert.match(uploadedFile.name, /^document-[a-f0-9]{12}\.pdf$/)
 
   const chat = aiand.calls[1]
   const sent = JSON.parse(chat.init.body)
@@ -95,4 +99,85 @@ test("uploads an inline PDF and sends only its file_id to chat", async () => {
   ])
   assert.equal(chat.init.body.includes("data:application/pdf;base64"), false)
   assert.equal(chat.init.headers.has("content-length"), false)
+})
+
+test("rejects malformed PDF-shaped parts before any network request", async (t) => {
+  const invalid = [
+    {
+      name: "non-canonical data URL",
+      data: `data:application/pdf;charset=utf-8;base64,${PDF_BYTES.toString("base64")}`,
+      options: {},
+    },
+    { name: "invalid base64", data: "data:application/pdf;base64,%%%%", options: {} },
+    {
+      name: "wrong file signature",
+      data: `data:application/pdf;base64,${Buffer.from("not a pdf").toString("base64")}`,
+      options: {},
+    },
+    { name: "decoded size over limit", data: PDF_DATA_URL, options: { maxPdfBytes: PDF_BYTES.length - 1 } },
+  ]
+
+  for (const item of invalid) {
+    await t.test(item.name, async () => {
+      const aiand = recordingAiand()
+      const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl, ...item.options })
+      const body = chatBody([{ type: "file", file: { filename: "unsafe.pdf", file_data: item.data } }])
+
+      await assert.rejects(
+        fetch(CHAT_URL, {
+          method: "POST",
+          headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        /\[aiand\] PDF validation failed:/,
+      )
+      assert.equal(aiand.calls.length, 0)
+    })
+  }
+})
+
+test("preserves requests without an eligible inline PDF", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const body = {
+    ...chatBody([
+      { type: "text", text: "hello" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+      { type: "file", file: { file_id: "file-existing" } },
+      { type: "file", file: { filename: "notes.txt", file_data: "data:text/plain;base64,aGk=" } },
+    ]),
+    tools: [{ type: "function", function: { name: "demo", parameters: { type: "object" } } }],
+    reasoning_effort: "high",
+  }
+  const serialized = JSON.stringify(body)
+
+  await fetch(CHAT_URL, {
+    method: "POST",
+    headers: { authorization: "Bearer test-key", "content-type": "application/json", "x-test": "preserve" },
+    body: serialized,
+  })
+
+  assert.equal(aiand.calls.length, 1)
+  assert.equal(aiand.calls[0].url, CHAT_URL)
+  assert.equal(aiand.calls[0].init.body, serialized)
+  assert.equal(aiand.calls[0].init.headers["x-test"], "preserve")
+})
+
+test("turns an invalid upload response into a safe adapter error", async () => {
+  const aiand = recordingAiand({
+    uploadResponse: () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } }),
+  })
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+
+  await assert.rejects(
+    fetch(CHAT_URL, {
+      method: "POST",
+      headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+      body: JSON.stringify(chatBody([{ type: "file", file: { file_data: PDF_DATA_URL } }])),
+    }),
+    /\[aiand\] PDF upload response failed:/,
+  )
+
+  assert.equal(aiand.calls.length, 1)
+  assert.equal(aiand.calls[0].url, `${BASE_URL}/files`)
 })
