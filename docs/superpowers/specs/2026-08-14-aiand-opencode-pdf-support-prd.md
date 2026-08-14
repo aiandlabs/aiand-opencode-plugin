@@ -124,7 +124,7 @@ For each eligible PDF, the plugin:
    - `purpose=document`
    - the decoded PDF bytes
    - a safe generated filename such as `document-<digest-prefix>.pdf`
-4. Validates the successful response, including a non-empty `file_id`.
+4. Validates the successful response, including a non-empty `id` whose value becomes the chat `file_id`.
 5. Replaces the inline content part immutably with the corresponding `file_id` reference.
 6. Removes a stale `content-length` header before dispatching the rebuilt request.
 
