@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto"
 import { decidePdfCapability, type CatalogSnapshot } from "./pdf-capability.js"
-import { preparePdfChunks } from "./pdf-chunks.js"
+import { visitPdfChunks } from "./pdf-chunks.js"
 
 type Fetch = typeof globalThis.fetch
 
 type PdfUploadFetchDependencies = {
-  preparePdfChunks: typeof preparePdfChunks
+  visitPdfChunks: typeof visitPdfChunks
 }
 
 export type PdfUploadFetchOptions = {
@@ -39,6 +39,14 @@ const DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024
 const DEFAULT_EXPIRY_SAFETY_MS = 60_000
 const DEFAULT_FILE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+export function normalizeMaxPdfBytes(value: number | undefined) {
+  const requested = value ?? DEFAULT_MAX_PDF_BYTES
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new Error("[aiand] PDF validation failed: invalid maximum byte limit")
+  }
+  return Math.min(requested, DEFAULT_MAX_PDF_BYTES)
+}
+
 function isBase64Character(code: number) {
   return (
     (code >= 65 && code <= 90) ||
@@ -49,17 +57,26 @@ function isBase64Character(code: number) {
   )
 }
 
-function inlinePdfPart(value: unknown): InlinePdfPart | undefined {
+function inlinePdfCandidate(value: unknown): InlinePdfPart | undefined {
   if (!value || typeof value !== "object") return undefined
   const part = value as Record<string, unknown>
   if (part.type !== "file" || !part.file || typeof part.file !== "object") return undefined
   const file = part.file as Record<string, unknown>
   if (typeof file.file_data !== "string") return undefined
-  if (!file.file_data.toLowerCase().startsWith(PDF_MIME_PREFIX)) return undefined
-  if (!file.file_data.startsWith(PDF_PREFIX)) {
+  const normalized = file.file_data.toLowerCase()
+  if (!normalized.startsWith(PDF_MIME_PREFIX)) return undefined
+  const boundary = normalized[PDF_MIME_PREFIX.length]
+  if (boundary !== ";" && boundary !== ",") return undefined
+  return value as InlinePdfPart
+}
+
+function inlinePdfPart(value: unknown): InlinePdfPart | undefined {
+  const candidate = inlinePdfCandidate(value)
+  if (!candidate) return undefined
+  if (!candidate.file.file_data.startsWith(PDF_PREFIX)) {
     throw new Error("[aiand] PDF validation failed: expected a canonical base64 data URL")
   }
-  return value as InlinePdfPart
+  return candidate
 }
 
 function containsRecognizedPdf(messages: unknown[]) {
@@ -67,13 +84,7 @@ function containsRecognizedPdf(messages: unknown[]) {
     if (!message || typeof message !== "object" || Array.isArray(message)) return false
     const content = (message as { content?: unknown }).content
     if (!Array.isArray(content)) return false
-    return content.some((part) => {
-      if (!part || typeof part !== "object" || Array.isArray(part)) return false
-      const file = (part as { file?: unknown }).file
-      if (!file || typeof file !== "object" || Array.isArray(file)) return false
-      const fileData = (file as { file_data?: unknown }).file_data
-      return typeof fileData === "string" && fileData.toLowerCase().startsWith(PDF_MIME_PREFIX)
-    })
+    return content.some((part) => inlinePdfCandidate(part) !== undefined)
   })
 }
 
@@ -154,13 +165,13 @@ async function uploadError(response: Response) {
 
 export function createPdfUploadFetch(
   options: PdfUploadFetchOptions,
-  dependencies: PdfUploadFetchDependencies = { preparePdfChunks },
+  dependencies: PdfUploadFetchDependencies = { visitPdfChunks },
 ): Fetch {
   const baseURL = options.baseURL.replace(/\/+$/, "")
   const chatURL = `${baseURL}/chat/completions`
   const filesURL = `${baseURL}/files`
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
-  const maxPdfBytes = options.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES
+  const maxPdfBytes = normalizeMaxPdfBytes(options.maxPdfBytes)
   const now = options.now ?? Date.now
   const expirySafetyMs = options.expirySafetyMs ?? DEFAULT_EXPIRY_SAFETY_MS
   const { catalogSnapshot } = options
@@ -169,6 +180,10 @@ export function createPdfUploadFetch(
   const uploads = new Map<string, Promise<FileLease>>()
   const manifests = new Map<string, FileLease[]>()
   const preparations = new Map<string, Promise<FileLease[]>>()
+
+  function isFresh(lease: FileLease) {
+    return now() < lease.expiresAtMs - expirySafetyMs
+  }
 
   async function uploadPdf(bytes: Buffer, digest: string, headers: Headers): Promise<FileLease> {
     const form = new FormData()
@@ -216,7 +231,7 @@ export function createPdfUploadFetch(
 
   async function resolveLease(bytes: Buffer, digest: string, headers: Headers): Promise<FileLease> {
     const lease = leases.get(digest)
-    if (lease && now() < lease.expiresAtMs - expirySafetyMs) return lease
+    if (lease && isFresh(lease)) return lease
     if (lease) leases.delete(digest)
 
     const pending = uploads.get(digest)
@@ -226,6 +241,9 @@ export function createPdfUploadFetch(
     uploads.set(digest, upload)
     try {
       const next = await upload
+      if (!isFresh(next)) {
+        throw new Error("[aiand] PDF upload response failed: unusable file expiry")
+      }
       leases.set(digest, next)
       return next
     } finally {
@@ -239,7 +257,7 @@ export function createPdfUploadFetch(
     headers: Headers,
   ): Promise<FileLease[]> {
     const manifest = manifests.get(sourceDigest)
-    if (manifest && manifest.every((lease) => now() < lease.expiresAtMs - expirySafetyMs)) {
+    if (manifest && manifest.every(isFresh)) {
       return manifest
     }
     if (manifest) manifests.delete(sourceDigest)
@@ -248,32 +266,25 @@ export function createPdfUploadFetch(
     if (pending) return pending
 
     const preparation = (async () => {
-      const chunks = await dependencies.preparePdfChunks(bytes)
-      const prepared: Array<{ bytes: Buffer; digest: string; lease: FileLease }> = []
-      for (const chunk of chunks) {
-        const chunkBytes = Buffer.from(chunk.bytes)
-        const chunkDigest = createHash("sha256").update(chunkBytes).digest("hex")
-        prepared.push({
-          bytes: chunkBytes,
-          digest: chunkDigest,
-          lease: await resolveLease(chunkBytes, chunkDigest, headers),
-        })
-      }
-
       while (true) {
-        let mismatch: (typeof prepared)[number] | undefined
-        for (const chosen of prepared) {
-          if (leases.get(chosen.digest) !== chosen.lease) {
-            mismatch = chosen
-            break
-          }
-        }
-        if (!mismatch) {
+        const prepared: Array<{ digest: string; lease: FileLease }> = []
+        await dependencies.visitPdfChunks(bytes, async (chunk) => {
+          const chunkBytes = Buffer.from(chunk.bytes.buffer, chunk.bytes.byteOffset, chunk.bytes.byteLength)
+          const digest = createHash("sha256").update(chunkBytes).digest("hex")
+          prepared.push({
+            digest,
+            lease: await resolveLease(chunkBytes, digest, headers),
+          })
+        })
+
+        const publishable = prepared.every(
+          (chosen) => leases.get(chosen.digest) === chosen.lease && isFresh(chosen.lease),
+        )
+        if (publishable) {
           const next = prepared.map((chosen) => chosen.lease)
           manifests.set(sourceDigest, next)
           return next
         }
-        mismatch.lease = await resolveLease(mismatch.bytes, mismatch.digest, headers)
       }
     })()
     preparations.set(sourceDigest, preparation)
@@ -332,34 +343,39 @@ export function createPdfUploadFetch(
     async function transformedBody() {
       const usedFileIDs = new Set<string>()
       let transformed = false
-      const messages = await Promise.all(
-        bodyMessages.map(async (message) => {
-          if (!message || typeof message !== "object" || Array.isArray(message)) return message
-          const chatMessage = message as { content?: unknown }
-          if (!Array.isArray(chatMessage.content)) return message
-          const contentParts = await Promise.all(
-            chatMessage.content.map(async (part) => {
-              const pdf = inlinePdfPart(part)
-              if (!pdf) return [part]
+      const messages: unknown[] = []
+      for (const message of bodyMessages) {
+        if (!message || typeof message !== "object" || Array.isArray(message)) {
+          messages.push(message)
+          continue
+        }
+        const chatMessage = message as { content?: unknown }
+        if (!Array.isArray(chatMessage.content)) {
+          messages.push(message)
+          continue
+        }
+        const content: unknown[] = []
+        for (const part of chatMessage.content) {
+          const pdf = inlinePdfPart(part)
+          if (!pdf) {
+            content.push(part)
+            continue
+          }
 
-              const { bytes, digest } = decodePdf(pdf.file.file_data, maxPdfBytes)
-              const uploadHeaders = new Headers(requestHeaders)
-              uploadHeaders.delete("content-type")
-              uploadHeaders.delete("content-length")
-              const documentLeases = await resolveDocument(bytes, digest, uploadHeaders)
+          const { bytes, digest } = decodePdf(pdf.file.file_data, maxPdfBytes)
+          const uploadHeaders = new Headers(requestHeaders)
+          uploadHeaders.delete("content-type")
+          uploadHeaders.delete("content-length")
+          const documentLeases = await resolveDocument(bytes, digest, uploadHeaders)
 
-              for (const lease of documentLeases) usedFileIDs.add(lease.fileID)
-              transformed = true
-              return documentLeases.map((lease) => ({
-                ...pdf,
-                file: { file_id: lease.fileID },
-              }))
-            }),
-          )
-          const content = contentParts.flat()
-          return { ...chatMessage, content }
-        }),
-      )
+          for (const lease of documentLeases) {
+            usedFileIDs.add(lease.fileID)
+            content.push({ ...pdf, file: { file_id: lease.fileID } })
+          }
+          transformed = true
+        }
+        messages.push({ ...chatMessage, content })
+      }
       return {
         modelID,
         transformed,

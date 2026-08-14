@@ -47,7 +47,7 @@ async function fetchCatalogSnapshot(): Promise<CatalogSnapshot> {
     // Bound the request so a hung gateway can't stall OpenCode startup.
     const res = await fetch(`${baseURL}/api.json`, { signal: AbortSignal.timeout(5000) })
     if (!res.ok) {
-      console.error(`[aiand] model catalog fetch failed: ${res.status} ${res.statusText}`)
+      console.error(`[aiand] model catalog fetch failed: HTTP ${res.status}`)
       return unavailableCatalogSnapshot()
     }
     const catalog = (await res.json()) as unknown
@@ -69,8 +69,8 @@ async function fetchCatalogSnapshot(): Promise<CatalogSnapshot> {
       fetchedAtMs: Date.now(),
       models: deepFreeze(models),
     })
-  } catch (err) {
-    console.error("[aiand] failed to load model catalog", err)
+  } catch {
+    console.error("[aiand] model catalog fetch failed")
     return unavailableCatalogSnapshot()
   }
 }

@@ -11,14 +11,17 @@ export type PreparePdfChunksOptions = {
   maxChunkBytes?: number
 }
 
+export type PdfChunkVisitor = (chunk: PdfChunk) => void | Promise<void>
+
 const DEFAULT_MAX_PAGES = 100
 const DEFAULT_MAX_BYTES = 100 * 1024 * 1024
 const PROCESSING_ERROR = "[aiand] PDF split failed: document could not be processed"
 
-export async function preparePdfChunks(
+export async function visitPdfChunks(
   bytes: Uint8Array,
+  visitor: PdfChunkVisitor,
   options: PreparePdfChunksOptions = {},
-): Promise<PdfChunk[]> {
+): Promise<void> {
   const requestedPages = options.maxPagesPerChunk ?? DEFAULT_MAX_PAGES
   const requestedBytes = options.maxChunkBytes ?? DEFAULT_MAX_BYTES
   if (!Number.isInteger(requestedPages) || requestedPages <= 0 || !Number.isFinite(requestedBytes) || requestedBytes <= 0) {
@@ -28,13 +31,14 @@ export async function preparePdfChunks(
   const maxChunkBytes = Math.min(requestedBytes, DEFAULT_MAX_BYTES)
 
   let source: PDFDocument
+  let pageCount: number
   try {
     source = await PDFDocument.load(bytes)
+    pageCount = source.getPageCount()
   } catch {
     throw new Error(PROCESSING_ERROR)
   }
 
-  const pageCount = source.getPageCount()
   if (pageCount === 0) {
     throw new Error("[aiand] PDF split failed: document has no pages")
   }
@@ -43,10 +47,10 @@ export async function preparePdfChunks(
     if (bytes.byteLength > maxChunkBytes) {
       throw new Error("[aiand] PDF split failed: chunk exceeds 104857600 bytes")
     }
-    return [{ bytes, firstPage: 1, lastPage: pageCount }]
+    await visitor({ bytes, firstPage: 1, lastPage: pageCount })
+    return
   }
 
-  const chunks: PdfChunk[] = []
   for (let start = 0; start < pageCount; start += maxPagesPerChunk) {
     const end = Math.min(start + maxPagesPerChunk, pageCount)
     let chunkBytes: Uint8Array
@@ -61,7 +65,17 @@ export async function preparePdfChunks(
     if (chunkBytes.byteLength > maxChunkBytes) {
       throw new Error("[aiand] PDF split failed: chunk exceeds 104857600 bytes")
     }
-    chunks.push({ bytes: chunkBytes, firstPage: start + 1, lastPage: end })
+    await visitor({ bytes: chunkBytes, firstPage: start + 1, lastPage: end })
   }
+}
+
+export async function preparePdfChunks(
+  bytes: Uint8Array,
+  options: PreparePdfChunksOptions = {},
+): Promise<PdfChunk[]> {
+  const chunks: PdfChunk[] = []
+  await visitPdfChunks(bytes, (chunk) => {
+    chunks.push(chunk)
+  }, options)
   return chunks
 }

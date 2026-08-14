@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import test from "node:test"
 import { PDFDocument } from "pdf-lib"
-import { preparePdfChunks } from "../dist/pdf-chunks.js"
+import { preparePdfChunks, visitPdfChunks } from "../dist/pdf-chunks.js"
 
 async function makePdf(pageCount) {
   const document = await PDFDocument.create()
@@ -10,6 +10,24 @@ async function makePdf(pageCount) {
     document.addPage([200 + index, 300])
   }
   return Buffer.from(await document.save())
+}
+
+function makeInvalidPageTreePdf() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids 3 /Count 1 >>",
+  ]
+  let contents = "%PDF-1.7\n"
+  const offsets = []
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(contents, "ascii"))
+    contents += `${index + 1} 0 obj\n${object}\nendobj\n`
+  }
+  const xrefOffset = Buffer.byteLength(contents, "ascii")
+  contents += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) contents += `${String(offset).padStart(10, "0")} 00000 n \n`
+  contents += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  return Buffer.from(contents, "ascii")
 }
 
 for (const pageCount of [1, 100]) {
@@ -39,6 +57,47 @@ for (const pageCount of [101, 201]) {
   })
 }
 
+test("waits for each chunk visitor before serializing the next chunk", async () => {
+  const source = await makePdf(201)
+  const originalCreate = PDFDocument.create
+  let createdChunks = 0
+  let releaseFirstVisit
+  const firstVisitReleased = new Promise((resolve) => {
+    releaseFirstVisit = resolve
+  })
+  let markFirstVisit
+  const firstVisit = new Promise((resolve) => {
+    markFirstVisit = resolve
+  })
+  const visited = []
+  PDFDocument.create = async (...args) => {
+    createdChunks += 1
+    return originalCreate.apply(PDFDocument, args)
+  }
+
+  try {
+    const preparation = visitPdfChunks(source, async (chunk) => {
+      visited.push([chunk.firstPage, chunk.lastPage])
+      if (visited.length === 1) {
+        markFirstVisit()
+        await firstVisitReleased
+      }
+    })
+
+    await firstVisit
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(createdChunks, 1)
+    assert.deepEqual(visited, [[1, 100]])
+
+    releaseFirstVisit()
+    await preparation
+    assert.equal(createdChunks, 3)
+    assert.deepEqual(visited, [[1, 100], [101, 200], [201, 201]])
+  } finally {
+    PDFDocument.create = originalCreate
+  }
+})
+
 test("serializes repeated oversized-source chunks identically across a timestamp boundary", async () => {
   const source = await makePdf(101)
   const first = await preparePdfChunks(source)
@@ -62,6 +121,16 @@ test("serializes repeated oversized-source chunks identically across a timestamp
 
 test("rejects malformed PDF with a fixed error", async () => {
   await assert.rejects(preparePdfChunks(Buffer.from("%PDF-")), {
+    message: "[aiand] PDF split failed: document could not be processed",
+  })
+})
+
+test("redacts a page-tree traversal failure after the PDF has loaded", async () => {
+  const source = makeInvalidPageTreePdf()
+  const loaded = await PDFDocument.load(source)
+  assert.throws(() => loaded.getPageCount())
+
+  await assert.rejects(preparePdfChunks(source), {
     message: "[aiand] PDF split failed: document could not be processed",
   })
 })

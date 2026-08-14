@@ -156,3 +156,41 @@ test("registers text-only config when the model catalog is unavailable", async (
     console.error = originalConsoleError
   }
 })
+
+test("logs only a fixed message and numeric status for catalog HTTP failures", async () => {
+  const originalFetch = globalThis.fetch
+  const originalConsoleError = console.error
+  const logged = []
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    statusText: "private upstream detail",
+  })
+  console.error = (...args) => logged.push(args)
+
+  try {
+    await AiandPlugin({})
+    assert.deepEqual(logged, [["[aiand] model catalog fetch failed: HTTP 503"]])
+  } finally {
+    globalThis.fetch = originalFetch
+    console.error = originalConsoleError
+  }
+})
+
+test("does not log catalog transport exception details", async () => {
+  const originalFetch = globalThis.fetch
+  const originalConsoleError = console.error
+  const logged = []
+  globalThis.fetch = async () => {
+    throw new Error("secret.internal.example transport detail")
+  }
+  console.error = (...args) => logged.push(args)
+
+  try {
+    await AiandPlugin({})
+    assert.deepEqual(logged, [["[aiand] model catalog fetch failed"]])
+  } finally {
+    globalThis.fetch = originalFetch
+    console.error = originalConsoleError
+  }
+})
