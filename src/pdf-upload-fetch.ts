@@ -206,7 +206,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
     const requestHeaders = new Headers(effectiveRequest.headers)
 
     async function transformedBody() {
-      const digests = new Set<string>()
+      const references = new Map<string, string>()
       let transformed = false
       const messages = await Promise.all(
         (body.messages ?? []).map(async (message) => {
@@ -222,7 +222,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
               uploadHeaders.delete("content-length")
               const lease = await resolveLease(bytes, digest, uploadHeaders)
 
-              digests.add(digest)
+              references.set(digest, lease.fileID)
               transformed = true
               return {
                 ...pdf,
@@ -234,7 +234,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
         }),
       )
       return {
-        digests,
+        references,
         transformed,
         serialized: JSON.stringify({ ...body, messages }),
       }
@@ -244,7 +244,10 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
       if (response.ok) return false
       try {
         const payload = (await response.clone().json()) as { error?: { code?: unknown } }
-        return payload.error?.code === "file_expired" || payload.error?.code === "file_not_found"
+        return (
+          (response.status === 410 && payload.error?.code === "file_expired") ||
+          (response.status === 404 && payload.error?.code === "file_not_found")
+        )
       } catch {
         return false
       }
@@ -262,7 +265,9 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
       })
 
       if (!retried && (await isStaleFileResponse(response))) {
-        for (const digest of transformed.digests) leases.delete(digest)
+        for (const [digest, staleFileID] of transformed.references) {
+          if (leases.get(digest)?.fileID === staleFileID) leases.delete(digest)
+        }
         return dispatch(true)
       }
       return response

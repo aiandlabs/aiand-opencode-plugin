@@ -385,10 +385,55 @@ test("refreshes a stale file reference and retries chat once", async (t) => {
   }
 })
 
+test("shares one refresh when concurrent requests discover the same stale reference", async () => {
+  let markRefreshed
+  const refreshed = new Promise((resolve) => {
+    markRefreshed = resolve
+  })
+  const aiand = recordingAiand({
+    uploadResponse: (count) => {
+      if (count === 2) markRefreshed()
+      return jsonResponse({ id: `file-${count}`, expires_at: 1_786_665_600 })
+    },
+    chatResponse: async (count) => {
+      if (count === 1) return jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+      if (count === 2) {
+        await refreshed
+        return jsonResponse({ error: { code: "file_expired" } }, { status: 410 })
+      }
+      return new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    },
+  })
+  const fetch = createPdfUploadFetch({
+    baseURL: BASE_URL,
+    fetchImpl: aiand.fetchImpl,
+    now: () => 1_786_660_000_000,
+  })
+
+  const responses = await Promise.all([sendPdf(fetch), sendPdf(fetch)])
+
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200],
+  )
+  assert.equal(aiand.calls.filter((call) => call.url === `${BASE_URL}/files`).length, 2)
+  const chats = aiand.calls.filter((call) => call.url === CHAT_URL).map((call) => JSON.parse(call.init.body))
+  assert.deepEqual(
+    chats.map((chat) => chat.messages[0].content[0].file.file_id),
+    ["file-1", "file-1", "file-2", "file-2"],
+  )
+})
+
 test("does not retry unrelated chat errors", async (t) => {
   const errors = [
     jsonResponse({ error: { code: "server_error" } }, { status: 500 }),
     jsonResponse({ error: { code: "unrelated_not_found" } }, { status: 404 }),
+    jsonResponse({ error: { code: "file_expired" } }, { status: 500 }),
+    jsonResponse({ error: { code: "file_not_found" } }, { status: 410 }),
+    jsonResponse({ error: { code: "file_expired" } }, { status: 404 }),
     new Response("not-json", { status: 410, headers: { "content-type": "text/plain" } }),
   ]
 
