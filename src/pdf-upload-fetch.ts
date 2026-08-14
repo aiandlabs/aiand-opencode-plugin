@@ -199,9 +199,18 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
       return fetchImpl(input, init)
     }
 
-    const body = JSON.parse(serializedBody) as {
-      messages?: Array<{ content?: unknown }>
+    let parsedBody: unknown
+    try {
+      parsedBody = JSON.parse(serializedBody)
+    } catch {
+      return fetchImpl(input, init)
     }
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return fetchImpl(input, init)
+    }
+    const body = parsedBody as { messages?: unknown }
+    if (!Array.isArray(body.messages)) return fetchImpl(input, init)
+    const bodyMessages = body.messages
 
     const requestHeaders = new Headers(effectiveRequest.headers)
 
@@ -209,10 +218,12 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
       const references = new Map<string, string>()
       let transformed = false
       const messages = await Promise.all(
-        (body.messages ?? []).map(async (message) => {
-          if (!Array.isArray(message.content)) return message
+        bodyMessages.map(async (message) => {
+          if (!message || typeof message !== "object" || Array.isArray(message)) return message
+          const chatMessage = message as { content?: unknown }
+          if (!Array.isArray(chatMessage.content)) return message
           const content = await Promise.all(
-            message.content.map(async (part) => {
+            chatMessage.content.map(async (part) => {
               const pdf = inlinePdfPart(part)
               if (!pdf) return part
 
@@ -230,7 +241,7 @@ export function createPdfUploadFetch(options: PdfUploadFetchOptions): Fetch {
               }
             }),
           )
-          return { ...message, content }
+          return { ...chatMessage, content }
         }),
       )
       return {

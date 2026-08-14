@@ -231,6 +231,58 @@ test("preserves requests without an eligible inline PDF", async () => {
   assert.equal(aiand.calls[0].init.headers["x-test"], "preserve")
 })
 
+test("preserves unrelated fields and headers while rewriting a PDF", async () => {
+  const aiand = recordingAiand()
+  const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+  const body = {
+    ...chatBody([
+      { type: "text", text: "hello" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+      { type: "file", file: { file_id: "file-existing" } },
+      { type: "file", file: { filename: "notes.txt", file_data: "data:text/plain;base64,aGk=" } },
+      { type: "file", file: { filename: "manual.pdf", file_data: PDF_DATA_URL } },
+    ]),
+    tools: [{ type: "function", function: { name: "demo", parameters: { type: "object" } } }],
+    reasoning_effort: "high",
+  }
+
+  await fetch(CHAT_URL, {
+    method: "POST",
+    headers: { authorization: "Bearer test-key", "content-type": "application/json", "x-test": "preserve" },
+    body: JSON.stringify(body),
+  })
+
+  assert.equal(aiand.calls.length, 2)
+  const chat = aiand.calls[1]
+  const sent = JSON.parse(chat.init.body)
+  assert.deepEqual(sent.tools, body.tools)
+  assert.equal(sent.reasoning_effort, "high")
+  assert.deepEqual(sent.messages[0].content.slice(0, 4), body.messages[0].content.slice(0, 4))
+  assert.deepEqual(sent.messages[0].content[4], { type: "file", file: { file_id: "file-test-1" } })
+  assert.equal(chat.init.headers.get("x-test"), "preserve")
+})
+
+test("passes through malformed or unexpected chat bodies unchanged", async (t) => {
+  for (const serialized of ["not-json", "null", "[]", '{"messages":{}}']) {
+    await t.test(serialized, async () => {
+      const aiand = recordingAiand()
+      const fetch = createPdfUploadFetch({ baseURL: BASE_URL, fetchImpl: aiand.fetchImpl })
+      const init = {
+        method: "POST",
+        headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+        body: serialized,
+      }
+
+      const response = await fetch(CHAT_URL, init)
+
+      assert.equal(response.status, 200)
+      assert.equal(aiand.calls.length, 1)
+      assert.equal(aiand.calls[0].url, CHAT_URL)
+      assert.equal(aiand.calls[0].init, init)
+    })
+  }
+})
+
 test("turns an invalid upload response into a safe adapter error", async () => {
   const aiand = recordingAiand({
     uploadResponse: () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } }),
