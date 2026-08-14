@@ -17,6 +17,7 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "check:dist": "node scripts/check-dist.mjs",
+    "test": "npm run build && node --test",
     "prepublishOnly": "tsc"
   },
   "keywords": [
