@@ -9,7 +9,13 @@ An **ai&** provider in OpenCode that:
 1. **Routes to the ai& gateway** — `https://api.aiand.com/v1` (OpenAI-compatible).
 2. **Logs in cleanly** — `opencode auth login` → **ai&** → paste your `sk-...` key.
 3. **Lists the live catalog** — the model picker is populated straight from ai&'s public
-   `/v1/api.json`, so new models show up without touching the plugin.
+   `/v1/api.json`, so new models show up without touching the plugin. The catalog is
+   cached to disk (6 h TTL), so a gateway outage still leaves the last known models in
+   the picker.
+4. **Retries transient failures** — rate limits (429) and server errors (5xx) are retried
+   with exponential backoff + jitter, honoring the gateway's `Retry-After` header.
+5. **Shows your usage** — `/aiand-usage` (or the `aiand_usage` tool) prints your org's
+   requests, tokens, and latency from the gateway's analytics API.
 
 Requires [OpenCode](https://opencode.ai) (`curl -fsSL https://opencode.ai/install | bash`).
 
@@ -45,7 +51,7 @@ opencode run "say hi in one word"   # one-shot
 
 > **Version pinning:** a bare `"@aiand/opencode-plugin"` installs the latest version on first
 > run and keeps using that cached copy afterwards. To pin (or force an upgrade), use an explicit
-> version — `"@aiand/opencode-plugin@0.1.0"` — which OpenCode caches separately per version.
+> version — `"@aiand/opencode-plugin@0.2.0"` — which OpenCode caches separately per version.
 
 ## Auth
 
@@ -55,6 +61,19 @@ opencode run "say hi in one word"   # one-shot
 
 The model picker and catalog populate **without** a key (`/v1/api.json` is public); a key is
 only needed to actually send a message. Get one at [aiand.com](https://aiand.com).
+
+## Usage analytics
+
+```bash
+opencode run "/aiand-usage 24h"
+```
+
+Prints your organization's traffic for the range (one of `1h`, `24h`, `7days`, `30days`,
+`3months`): requests, input/output tokens, tokens/s, and latency. The same data is exposed
+to the model as the `aiand_usage` tool, so you can just ask "how much have I used ai& today?".
+
+The analytics call uses `AIAND_API_KEY` from the environment (OpenCode's stored auth keys
+are not readable by plugins); when it isn't set, the tool says so instead of guessing.
 
 ## Web search
 
@@ -75,24 +94,29 @@ doesn't pick it up, launching the app from a terminal where the variable is expo
 
 ## How it works
 
-The plugin uses two OpenCode hooks:
+The plugin uses four OpenCode plugin hooks:
 
 | Hook | What it does |
 |---|---|
-| `config` | fetches ai&'s public `/v1/api.json` and registers the `aiand` provider (`@ai-sdk/openai-compatible`, `baseURL`) **with the live model list injected inline** |
-| `auth` | adds the "ai& API Key" login method; injects the stored key as `Bearer` |
+| `config` | fetches ai&'s public `/v1/api.json` (disk-cached, 6 h TTL) and registers the `aiand` provider (`@ai-sdk/openai-compatible`, `baseURL`) **with the live model list injected inline**. Also registers the `/aiand-usage` command. Your own `opencode.json` settings for the `aiand` provider always win — the plugin only fills in what's missing. |
+| `auth` | adds the "ai& API Key" login method; injects the stored key as `Bearer` **plus a retrying `fetch`** that re-issues rate-limited (429) and failed (5xx) requests with backoff, honoring `Retry-After`. |
+| `tool` | registers `aiand_usage`, which queries `https://api.aiand.com/analytics/metrics` for org usage. |
+| — | if the catalog endpoint is unreachable, the last cached model list keeps serving (stale beats empty). |
 
 > Why inline models (not the `provider.models()` hook)? OpenCode only runs `provider.models()`
 > for providers already known to models.dev; a brand-new provider's models must be declared in
 > config. The `config` hook runs *before* OpenCode reads `cfg.provider`, so fetching the catalog
 > there and setting `provider.aiand.models` is what makes the picker show ai&'s live models.
+> (ai& is now also listed on models.dev itself, so the picker works even without the plugin —
+> the plugin's live fetch remains the source with the freshest data, and the only one that
+> follows `AIAND_BASE_URL`.)
 
 ## Configuration
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AIAND_API_KEY` | — | Your ai& API key (alternative to `opencode auth login`). |
-| `AIAND_BASE_URL` | `https://api.aiand.com/v1` | Override the gateway base URL. |
+| `AIAND_API_KEY` | — | Your ai& API key (alternative to `opencode auth login`). Also used by `/aiand-usage`. |
+| `AIAND_BASE_URL` | `https://api.aiand.com/v1` | Override the gateway base URL (catalog cache is keyed per host). |
 | `OPENCODE_ENABLE_EXA` | — | Set to `1` to enable OpenCode's built-in [web search](#web-search) (read by OpenCode itself, not the plugin). |
 
 ## Contributing / local development

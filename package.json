@@ -1,7 +1,7 @@
 {
   "name": "@aiand/opencode-plugin",
-  "version": "0.1.0",
-  "description": "ai& provider plugin for OpenCode — live model catalog + API-key auth via the ai& gateway",
+  "version": "0.2.0",
+  "description": "ai& provider plugin for OpenCode — live model catalog, API-key auth, retrying fetch, and usage analytics via the ai& gateway",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -36,12 +36,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
-  },
-  "peerDependenciesMeta": {
-    "@opencode-ai/plugin": {
-      "optional": true
-    }
+    "@opencode-ai/plugin": ">=1.0.0"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.17.15",
