@@ -39,9 +39,9 @@ async function fetchCatalogModels(): Promise<ProviderModels> {
       return {}
     }
     const catalog = (await res.json()) as Record<string, CatalogProvider>
-    // The catalog keys its single entry under "opencode"; fall back to the
-    // first entry if that ever changes.
-    const entry = catalog["opencode"] ?? Object.values(catalog)[0]
+    // The catalog keys entries by client id ("aiand", "opencode"); prefer
+    // this plugin's id, fall back to the first entry if that ever changes.
+    const entry = catalog[PROVIDER_ID] ?? catalog["opencode"] ?? Object.values(catalog)[0]
     return entry?.models ?? {}
   } catch (err) {
     console.error("[aiand] failed to load model catalog", err)
@@ -60,22 +60,34 @@ export const AiandPlugin: Plugin = async () => {
     // Register the ai& provider (OpenAI-compatible), pointed at the gateway,
     // with its live model list. This single hook is what makes "aiand" a
     // first-class provider in the picker and `-m aiand/<model>`.
+    // Merge, don't clobber: a user-declared `provider.aiand` (or the native
+    // models.dev entry, which lands in cfg.provider before this hook) always
+    // wins. We only create the entry when absent, or fill in a missing model
+    // catalog — never overwrite the user's npm/options/models.
     config: async (cfg) => {
       cfg.provider ??= {}
-      cfg.provider[PROVIDER_ID] ??= {
-        name: "ai&",
-        npm: "@ai-sdk/openai-compatible",
-        api: baseURL,
-        // Lets `opencode run` pick up a key non-interactively from the env.
-        env: ["AIAND_API_KEY"],
-        options: {
-          baseURL,
-          // Used when AIAND_API_KEY is set; an interactive `auth login` key
-          // overrides this at request time via the auth loader below.
-          apiKey: process.env.AIAND_API_KEY,
-        },
-        models,
+      const existing = cfg.provider[PROVIDER_ID]
+      if (!existing?.npm && !existing?.options && !existing?.models) {
+        cfg.provider[PROVIDER_ID] = {
+          name: "ai&",
+          npm: "@ai-sdk/openai-compatible",
+          api: baseURL,
+          // Lets `opencode run` pick up a key non-interactively from the env.
+          env: ["AIAND_API_KEY"],
+          options: {
+            baseURL,
+            // Used when AIAND_API_KEY is set; an interactive `auth login` key
+            // overrides this at request time via the auth loader below.
+            apiKey: process.env.AIAND_API_KEY,
+          },
+          models,
+        }
+      } else if (existing && !existing.models) {
+        // User (or native models.dev entry) configured the provider but left
+        // models empty: only fill in the catalog, leave everything else theirs.
+        existing.models = models
       }
+      // Else: an explicit model list (user or native) wins — never clobber it.
     },
 
     // `opencode auth login` → "ai&" → paste your sk-... key. The loader injects
